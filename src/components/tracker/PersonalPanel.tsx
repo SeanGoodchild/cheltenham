@@ -1,23 +1,17 @@
 import { useState } from "react"
-import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { formatCurrency, formatOdds } from "@/lib/format"
-import { calculateBetPotentialReturn, resolveBetOddsUsed, toCumulativeSeries } from "@/lib/settlement"
+import { calculateBetPotentialReturn, resolveBetOddsUsed } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
-import type { Bet, Race, UserProfile, UserStats } from "@/lib/types"
+import type { Bet, Race, UserProfile } from "@/lib/types"
 
 type PersonalPanelProps = {
-  users: UserProfile[]
   user: UserProfile | undefined
-  userStats: UserStats | undefined
   bets: Bet[]
   races: Race[]
-  selectedSummaryUserId: string
-  onSelectSummaryUserId: (userId: string) => void
   onResolveOtherBet: (input: { betId: string; totalReturn: number }) => Promise<void>
 }
 
@@ -26,13 +20,9 @@ function findRaceName(raceId: string, races: Race[]): string {
 }
 
 export function PersonalPanel({
-  users,
   user,
-  userStats,
   bets,
   races,
-  selectedSummaryUserId,
-  onSelectSummaryUserId,
   onResolveOtherBet,
 }: PersonalPanelProps) {
   const [manualReturnByBetId, setManualReturnByBetId] = useState<Record<string, string>>({})
@@ -43,15 +33,14 @@ export function PersonalPanel({
     return (
       <Card>
         <CardHeader>
-          <CardTitle>My Stats</CardTitle>
+          <CardTitle>My Summary</CardTitle>
         </CardHeader>
-        <CardContent>Select your identity to view stats.</CardContent>
+        <CardContent>Select your identity to view your betslip.</CardContent>
       </Card>
     )
   }
 
   const personalBets = bets.filter((bet) => bet.userId === user.id)
-  const chartData = toCumulativeSeries(personalBets)
 
   const handleManualResolve = async (bet: Bet) => {
     const rawValue = manualReturnByBetId[bet.id] ?? ""
@@ -80,58 +69,9 @@ export function PersonalPanel({
   return (
     <Card className="shadow-xs">
       <CardHeader>
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <CardTitle>{user.displayName}'s Betslip</CardTitle>
-          <div className="w-full max-w-[240px] space-y-1">
-            <Label htmlFor="summary-user-select" className="text-xs text-muted-foreground">
-              View lad
-            </Label>
-            <select
-              id="summary-user-select"
-              className="native-select"
-              value={selectedSummaryUserId}
-              onChange={(event) => onSelectSummaryUserId(event.target.value)}
-            >
-              {users.map((entry) => (
-                <option key={`summary-user-${entry.id}`} value={entry.id}>
-                  {entry.displayName}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+        <CardTitle>{user.displayName}'s Betslip</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-          <div className="panel-subtle">
-            <div className="text-xs text-muted-foreground">Total Staked</div>
-            <div className="text-lg font-semibold">{formatCurrency(userStats?.totalStaked ?? 0)}</div>
-          </div>
-          <div className="panel-subtle">
-            <div className="text-xs text-muted-foreground">Total Returns</div>
-            <div className="text-lg font-semibold">{formatCurrency(userStats?.totalReturns ?? 0)}</div>
-          </div>
-          <div className="panel-subtle">
-            <div className="text-xs text-muted-foreground">P/L</div>
-            <div className="text-lg font-semibold">{formatCurrency(userStats?.profitLoss ?? 0)}</div>
-          </div>
-          <div className="panel-subtle">
-            <div className="text-xs text-muted-foreground">Bets Placed</div>
-            <div className="text-lg font-semibold">{userStats?.betsPlaced ?? 0}</div>
-          </div>
-        </div>
-
-        <div className="h-56 min-w-0 rounded-md border border-border p-2">
-          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200}>
-            <LineChart data={chartData}>
-              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip formatter={(value) => formatCurrency(Number(value ?? 0))} />
-              <Line type="monotone" dataKey="value" stroke="var(--primary)" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-
         {actionError ? <div className="text-sm text-destructive">{actionError}</div> : null}
 
         <div className="data-table-shell">

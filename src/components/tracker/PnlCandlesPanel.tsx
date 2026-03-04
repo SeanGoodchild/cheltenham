@@ -24,19 +24,11 @@ type CandlePoint = {
   low: number
   traceA: number
   traceB: number
-  wickBase: number
-  wickRange: number
-  bullBase: number
-  bullRange: number
-  bearBase: number
-  bearRange: number
+  bodyBase: number
+  bodyRange: number
+  bodyTone: "up" | "down" | "flat"
   traceAShift: number
   traceBShift: number
-}
-
-type OffChartTag = {
-  year: string
-  value: number
 }
 
 type HistoricalTraceData = {
@@ -137,7 +129,6 @@ function buildCandleData(
   traceBYear: string
   yDomainMin: number
   yDomainMax: number
-  offChartTags: OffChartTag[]
 } {
   const settledRaces = races
     .filter((race) => race.status === "settled")
@@ -151,7 +142,6 @@ function buildCandleData(
       traceBYear: HISTORICAL_TRACES?.traceBYear ?? "Prev B",
       yDomainMin: 0,
       yDomainMax: 0,
-      offChartTags: [],
     }
   }
 
@@ -171,9 +161,9 @@ function buildCandleData(
     const open = cumulative
     const delta = Number((racePnl.get(race.id) ?? 0).toFixed(2))
     const close = Number((open + delta).toFixed(2))
-    const wick = Math.max(5, Math.abs(delta) * 0.35)
-    const high = Math.max(open, close) + wick
-    const low = Math.min(open, close) - wick
+    const isFlat = Math.abs(delta) < 0.005
+    const high = isFlat ? close + 1.25 : Math.max(open, close)
+    const low = isFlat ? close - 1.25 : Math.min(open, close)
 
     const traceA =
       HISTORICAL_TRACES?.valuesA[index] ??
@@ -191,25 +181,50 @@ function buildCandleData(
       close,
       high,
       low,
+      isFlat,
       traceA,
       traceB,
     }
   })
 
-  const currentMin = Math.min(0, ...raw.map((point) => point.low))
-  const currentMax = Math.max(0, ...raw.map((point) => point.high))
-  const shiftOffset = Math.abs(currentMin) + 20
-  const yDomainMin = 0
-  const yDomainMax = currentMax + shiftOffset + 20
+  const currentMin = Math.min(...raw.map((point) => point.low))
+  const currentMax = Math.max(...raw.map((point) => point.high))
+  const historicalMin = Math.min(
+    ...raw.map((point) => Math.min(point.traceA, point.traceB)),
+  )
+  const historicalMax = Math.max(
+    ...raw.map((point) => Math.max(point.traceA, point.traceB)),
+  )
+
+  const currentRange = Math.max(currentMax - currentMin, 1)
+  const maxTotalRange = currentRange / 0.6
+  const extraRangeBudget = Math.max(0, maxTotalRange - currentRange)
+
+  const requiredLower = Math.max(0, currentMin - historicalMin)
+  const requiredUpper = Math.max(0, historicalMax - currentMax)
+  const totalRequired = requiredLower + requiredUpper
+
+  let lowerExtra = 0
+  let upperExtra = 0
+  if (totalRequired <= extraRangeBudget) {
+    lowerExtra = requiredLower
+    upperExtra = requiredUpper
+  } else if (totalRequired > 0 && extraRangeBudget > 0) {
+    lowerExtra = (extraRangeBudget * requiredLower) / totalRequired
+    upperExtra = (extraRangeBudget * requiredUpper) / totalRequired
+  }
+
+  const domainMinUnshifted = currentMin - lowerExtra
+  const domainMaxUnshifted = currentMax + upperExtra
+  const shiftOffset = Math.abs(Math.min(domainMinUnshifted, 0)) + 20
+  const yDomainMin = domainMinUnshifted + shiftOffset
+  const yDomainMax = domainMaxUnshifted + shiftOffset
 
   const points: CandlePoint[] = raw.map((point) => ({
     ...point,
-    wickBase: point.low + shiftOffset,
-    wickRange: point.high - point.low,
-    bullBase: point.open + shiftOffset,
-    bullRange: Math.max(point.close - point.open, 0),
-    bearBase: point.close + shiftOffset,
-    bearRange: Math.max(point.open - point.close, 0),
+    bodyBase: point.low + shiftOffset,
+    bodyRange: point.high - point.low,
+    bodyTone: point.isFlat ? "flat" : point.close > point.open ? "up" : "down",
     traceAShift: point.traceA + shiftOffset,
     traceBShift: point.traceB + shiftOffset,
   }))
@@ -221,18 +236,6 @@ function buildCandleData(
     traceBYear: HISTORICAL_TRACES?.traceBYear ?? "Prev B",
     yDomainMin,
     yDomainMax,
-    offChartTags: [
-      {
-        year: HISTORICAL_TRACES?.traceAYear ?? "Prev A",
-        value: Math.max(...raw.map((point) => point.traceA)),
-      },
-      {
-        year: HISTORICAL_TRACES?.traceBYear ?? "Prev B",
-        value: Math.max(...raw.map((point) => point.traceB)),
-      },
-    ]
-      .filter((entry, index, arr) => entry.value > currentMax && (index === 0 || entry.year !== arr[0]?.year))
-      .sort((a, b) => b.value - a.value),
   }
 }
 
@@ -253,7 +256,8 @@ function CandleTooltip(props: {
 
   const point = props.payload[0].payload as CandlePoint
   const change = Number((point.close - point.open).toFixed(2))
-  const isUp = change >= 0
+  const changeClass = change > 0 ? "text-primary" : change < 0 ? "text-destructive" : "text-muted-foreground"
+  const changePrefix = change > 0 ? "+" : ""
 
   return (
     <div className="max-w-[260px] rounded-md border border-border bg-background/95 px-3 py-2 text-xs shadow-xl backdrop-blur">
@@ -265,8 +269,8 @@ function CandleTooltip(props: {
         <span className="text-muted-foreground">Close</span>
         <span className="text-right">{formatCurrency(point.close)}</span>
         <span className="text-muted-foreground">Change</span>
-        <span className={`text-right ${isUp ? "text-primary" : "text-destructive"}`}>
-          {isUp ? "+" : ""}
+        <span className={`text-right ${changeClass}`}>
+          {changePrefix}
           {formatCurrency(change)}
         </span>
         <span className="text-muted-foreground">High / Low</span>
@@ -299,20 +303,6 @@ export function PnlCandlesPanel({ bets, races }: PnlCandlesPanelProps) {
           </div>
         ) : (
           <div className="relative h-full min-w-0">
-            {candle.offChartTags.length ? (
-              <div className="pointer-events-none absolute right-2 top-2 z-10 flex max-w-[70%] flex-col gap-1">
-                {candle.offChartTags.map((tag) => (
-                  <div
-                    key={`${tag.year}-${tag.value}`}
-                    className="rounded-md border border-border bg-background/90 px-2 py-1 text-[10px] leading-tight text-muted-foreground shadow-md backdrop-blur"
-                    title={`${tag.year} historical peak`}
-                  >
-                    <span className="mr-1 font-medium text-foreground">{tag.year}</span>
-                    <span>off-chart: {formatCurrency(tag.value)}</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
             <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={220}>
               <ComposedChart data={candle.points} margin={{ top: 12, right: 8, left: 8, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -328,27 +318,20 @@ export function PnlCandlesPanel({ bets, races }: PnlCandlesPanelProps) {
                   content={<CandleTooltip traceAYear={candle.traceAYear} traceBYear={candle.traceBYear} />}
                 />
 
-                <Bar dataKey="wickBase" stackId="wick" fill="transparent" barSize={2} isAnimationActive={false} />
-                <Bar
-                  dataKey="wickRange"
-                  stackId="wick"
-                  fill="var(--muted-foreground)"
-                  opacity={0.35}
-                  barSize={2}
-                  isAnimationActive={false}
-                />
-
-                <Bar dataKey="bullBase" stackId="bull" fill="transparent" barSize={12} isAnimationActive={false} />
-                <Bar dataKey="bullRange" stackId="bull" barSize={12} isAnimationActive={false}>
+                <Bar dataKey="bodyBase" stackId="body" fill="transparent" barSize={12} isAnimationActive={false} />
+                <Bar dataKey="bodyRange" stackId="body" barSize={12} isAnimationActive={false}>
                   {candle.points.map((entry) => (
-                    <Cell key={`bull-${entry.label}`} fill={entry.bullRange > 0 ? "var(--primary)" : "transparent"} />
-                  ))}
-                </Bar>
-
-                <Bar dataKey="bearBase" stackId="bear" fill="transparent" barSize={12} isAnimationActive={false} />
-                <Bar dataKey="bearRange" stackId="bear" barSize={12} isAnimationActive={false}>
-                  {candle.points.map((entry) => (
-                    <Cell key={`bear-${entry.label}`} fill={entry.bearRange > 0 ? "var(--destructive)" : "transparent"} />
+                    <Cell
+                      key={`body-${entry.label}`}
+                      fill={
+                        entry.bodyTone === "up"
+                          ? "var(--primary)"
+                          : entry.bodyTone === "down"
+                            ? "var(--destructive)"
+                            : "var(--muted-foreground)"
+                      }
+                      opacity={entry.bodyTone === "flat" ? 0.7 : 1}
+                    />
                   ))}
                 </Bar>
 

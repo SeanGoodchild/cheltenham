@@ -93,7 +93,12 @@ function CurrentRaceCard({ races, bets }: { races: Race[]; bets: Bet[] }) {
   )
 }
 
-export function MainBoard({ bets, users, races, stats }: MainBoardProps) {
+export function MainBoard({
+  bets,
+  users,
+  races,
+  stats,
+}: MainBoardProps) {
   const statsByUser = new Map(stats.map((entry) => [entry.userId, entry]))
   const latestSettledRace = races
     .filter((race) => race.status === "settled")

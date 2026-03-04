@@ -98,16 +98,6 @@ function findMarketDecimalOdds(race: Race | undefined, selectionName: string, ho
   return Number.isFinite(bestDecimal) && Number(bestDecimal) >= 1 ? Number(bestDecimal) : null
 }
 
-function lifecycleLabel(value: Race["lifecycle"]): string {
-  if (value === "in_progress") {
-    return "In Progress"
-  }
-  if (value === "complete") {
-    return "Complete"
-  }
-  return "Upcoming"
-}
-
 export function BetPanel({
   races,
   bets,
@@ -443,7 +433,7 @@ export function BetPanel({
                         <option value="">Select race</option>
                         {racesSorted.map((entry) => (
                           <option key={entry.id} value={entry.id}>
-                            {formatIso(entry.offTime, "EEE HH:mm")} - {entry.name} [{lifecycleLabel(entry.lifecycle)}]
+                            {formatIso(entry.offTime, "EEE HH:mm")} - {entry.name}
                           </option>
                         ))}
                       </select>

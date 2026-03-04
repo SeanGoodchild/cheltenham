@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { BarChart3, Menu, RefreshCw, Shield, UserRound, Wallet, X } from "lucide-react"
+import { BarChart3, ChevronDown, Menu, RefreshCw, Shield, UserRound, Wallet, X } from "lucide-react"
 
 import { AdminPanel } from "@/components/tracker/AdminPanel"
 import { BetPanel, type BetDraftForm } from "@/components/tracker/BetPanel"
@@ -18,6 +18,13 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Label } from "@/components/ui/label"
 import { useTrackerData } from "@/hooks/useTrackerData"
 import {
@@ -42,6 +49,7 @@ import { cn } from "@/lib/utils"
 
 const USER_STORAGE_KEY = "cheltenham.selectedUser"
 type AppTab = "new-bet" | "main-cashboard" | "user-summary"
+type MainBoardUserView = { mode: "all" } | { mode: "custom"; userIds: string[] }
 
 const TABS: Array<{ id: AppTab; label: string; shortLabel: string; icon: typeof Wallet }> = [
   { id: "new-bet", label: "New Bet", shortLabel: "Bet", icon: Wallet },
@@ -105,7 +113,7 @@ export function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [adminOpen, setAdminOpen] = useState(false)
   const [identityDraftUserId, setIdentityDraftUserId] = useState("")
-  const [selectedSummaryUserId, setSelectedSummaryUserId] = useState("")
+  const [mainBoardUserView, setMainBoardUserView] = useState<MainBoardUserView>({ mode: "all" })
   const [simulatingRaces, setSimulatingRaces] = useState(false)
   const [nowTickMs, setNowTickMs] = useState(() => Date.now())
   const [simulationInfo, setSimulationInfo] = useState<{
@@ -132,11 +140,54 @@ export function App() {
   const hasValidSelectedUser = users.some((user) => user.id === selectedUserId)
   const resolvedSelectedUserId = hasValidSelectedUser ? selectedUserId : ""
   const identityGateOpen = !bootstrapping && users.length > 0 && !hasValidSelectedUser
-  const hasValidSummaryUser = users.some((user) => user.id === selectedSummaryUserId)
-  const resolvedSummaryUserId =
-    hasValidSummaryUser ? selectedSummaryUserId : resolvedSelectedUserId || users[0]?.id || ""
-  const selectedSummaryUser = users.find((user) => user.id === resolvedSummaryUserId)
-  const selectedSummaryUserStats = derivedUserStats.find((entry) => entry.userId === resolvedSummaryUserId)
+  const selectedSummaryUser = users.find((user) => user.id === resolvedSelectedUserId)
+  const mainBoardUserOptions = useMemo(() => {
+    const self = users.find((user) => user.id === resolvedSelectedUserId)
+    if (!self) {
+      return users
+    }
+    return [self, ...users.filter((user) => user.id !== self.id)]
+  }, [resolvedSelectedUserId, users])
+  const mainBoardSelectedUserIds = useMemo(() => {
+    if (mainBoardUserView.mode === "all") {
+      return mainBoardUserOptions.map((user) => user.id)
+    }
+
+    const valid = mainBoardUserView.userIds.filter((userId) =>
+      mainBoardUserOptions.some((user) => user.id === userId),
+    )
+    if (!valid.length) {
+      return mainBoardUserOptions.map((user) => user.id)
+    }
+    return valid
+  }, [mainBoardUserOptions, mainBoardUserView])
+  const mainBoardSelectedUserIdSet = useMemo(
+    () => new Set(mainBoardSelectedUserIds),
+    [mainBoardSelectedUserIds],
+  )
+  const isAllMainBoardUsersSelected =
+    mainBoardUserView.mode === "all" || mainBoardSelectedUserIds.length === mainBoardUserOptions.length
+  const mainBoardViewLabel = useMemo(() => {
+    if (!mainBoardUserOptions.length || isAllMainBoardUsersSelected) {
+      return "All The Lads"
+    }
+    if (mainBoardSelectedUserIds.length === 1) {
+      return mainBoardUserOptions.find((user) => user.id === mainBoardSelectedUserIds[0])?.displayName ?? "1 lad"
+    }
+    return `${mainBoardSelectedUserIds.length} lads selected`
+  }, [isAllMainBoardUsersSelected, mainBoardSelectedUserIds, mainBoardUserOptions])
+  const mainBoardUsers =
+    isAllMainBoardUsersSelected ? users : users.filter((user) => mainBoardSelectedUserIdSet.has(user.id))
+  const mainBoardBets =
+    isAllMainBoardUsersSelected ? bets : bets.filter((bet) => mainBoardSelectedUserIdSet.has(bet.userId))
+  const mainBoardStats =
+    isAllMainBoardUsersSelected
+      ? derivedUserStats
+      : derivedUserStats.filter((entry) => mainBoardSelectedUserIdSet.has(entry.userId))
+  const mainBoardGlobalStats: GlobalStats =
+    isAllMainBoardUsersSelected
+      ? derivedGlobalStats
+      : computeGlobalStats(mainBoardBets, mainBoardUsers, nowIso())
   const activeTabMeta = TABS.find((tab) => tab.id === activeTab) ?? TABS[0]
   const lastRefreshedLabel = formatLastRefreshed(raceImportRun)
   const effectiveSelectedUserId = resolvedSelectedUserId || identityDraftUserId || users[0]?.id || ""
@@ -164,6 +215,37 @@ export function App() {
     persistUserId(value)
     setIdentityDraftUserId(value)
     setMobileMenuOpen(false)
+  }
+
+  const handleToggleMainBoardUser = (userId: string, checked: boolean | "indeterminate") => {
+    if (!mainBoardUserOptions.length) {
+      return
+    }
+
+    if (mainBoardUserView.mode === "all") {
+      setMainBoardUserView({ mode: "custom", userIds: [userId] })
+      return
+    }
+
+    const next = new Set(mainBoardUserView.userIds.filter((entry) => users.some((user) => user.id === entry)))
+    if (checked === true) {
+      next.add(userId)
+    } else {
+      if (next.size === 1 && next.has(userId)) {
+        return
+      }
+      next.delete(userId)
+    }
+
+    const ordered = mainBoardUserOptions.map((user) => user.id).filter((id) => next.has(id))
+    if (!ordered.length) {
+      return
+    }
+    if (ordered.length === mainBoardUserOptions.length) {
+      setMainBoardUserView({ mode: "all" })
+      return
+    }
+    setMainBoardUserView({ mode: "custom", userIds: ordered })
   }
 
   async function handleCreateBet(form: BetDraftForm) {
@@ -273,11 +355,18 @@ export function App() {
     if (users.length === 0) {
       return
     }
-    if (users.some((user) => user.id === selectedSummaryUserId)) {
+    if (mainBoardUserView.mode === "all") {
       return
     }
-    setSelectedSummaryUserId(resolvedSelectedUserId || users[0].id)
-  }, [resolvedSelectedUserId, selectedSummaryUserId, users])
+    const valid = mainBoardUserView.userIds.filter((userId) => users.some((user) => user.id === userId))
+    if (!valid.length) {
+      setMainBoardUserView({ mode: "all" })
+      return
+    }
+    if (valid.length !== mainBoardUserView.userIds.length) {
+      setMainBoardUserView({ mode: "custom", userIds: valid })
+    }
+  }, [mainBoardUserView, users])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -396,22 +485,55 @@ export function App() {
                 <div className="space-y-4">
                   <StatsCards
                     title="Main Cashboard"
-                    middleContent={<PnlCandlesPanel bets={bets} races={races} />}
-                    stats={derivedGlobalStats}
+                    middleContent={<PnlCandlesPanel bets={mainBoardBets} races={races} />}
+                    headerRight={
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          className="inline-flex h-9 min-w-[170px] items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-sm"
+                        >
+                          <span className="truncate">{mainBoardViewLabel}</span>
+                          <ChevronDown className="size-4 text-muted-foreground" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-56">
+                          <DropdownMenuCheckboxItem
+                            checked={isAllMainBoardUsersSelected}
+                            onCheckedChange={(checked) => {
+                              if (checked === true) {
+                                setMainBoardUserView({ mode: "all" })
+                              }
+                            }}
+                          >
+                            All The Lads
+                          </DropdownMenuCheckboxItem>
+                          <DropdownMenuSeparator />
+                          {mainBoardUserOptions.map((user) => (
+                            <DropdownMenuCheckboxItem
+                              key={`main-view-user-${user.id}`}
+                              checked={isAllMainBoardUsersSelected ? true : mainBoardSelectedUserIdSet.has(user.id)}
+                              onCheckedChange={(checked) => handleToggleMainBoardUser(user.id, checked)}
+                            >
+                              {user.displayName}
+                            </DropdownMenuCheckboxItem>
+                          ))}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    }
+                    stats={mainBoardGlobalStats}
                   />
-                  <MainBoard bets={bets} users={users} races={races} stats={derivedUserStats} />
+                  <MainBoard
+                    bets={mainBoardBets}
+                    users={mainBoardUsers}
+                    races={races}
+                    stats={mainBoardStats}
+                  />
                 </div>
               ) : null}
 
               {activeTab === "user-summary" ? (
                 <PersonalPanel
-                  users={users}
                   user={selectedSummaryUser}
-                  userStats={selectedSummaryUserStats}
                   bets={bets}
                   races={races}
-                  selectedSummaryUserId={resolvedSummaryUserId}
-                  onSelectSummaryUserId={setSelectedSummaryUserId}
                   onResolveOtherBet={handleResolveOtherBet}
                 />
               ) : null}

@@ -7,6 +7,7 @@ import type { GlobalStats, UserStats } from "@/lib/types"
 type StatsCardsProps = {
   title: string
   middleContent?: ReactNode
+  headerRight?: ReactNode
   stats: Pick<
     GlobalStats | UserStats,
     | "totalStaked"
@@ -30,14 +31,17 @@ function StatItem({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function StatsCards({ title, middleContent, stats }: StatsCardsProps) {
+export function StatsCards({ title, middleContent, headerRight, stats }: StatsCardsProps) {
   const meterTarget = Math.max(2500, Math.ceil(stats.totalStaked / 250) * 250)
   const meterPct = Math.min(100, (stats.totalStaked / meterTarget) * 100)
 
   return (
     <Card className="h-full shadow-xs">
       <CardHeader>
-        <CardTitle>{title}</CardTitle>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <CardTitle>{title}</CardTitle>
+          {headerRight}
+        </div>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="panel-subtle">
