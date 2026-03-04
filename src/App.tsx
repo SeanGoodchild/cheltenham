@@ -5,6 +5,7 @@ import { AdminPanel } from "@/components/tracker/AdminPanel"
 import { BetPanel, type BetDraftForm } from "@/components/tracker/BetPanel"
 import { MainBoard } from "@/components/tracker/MainBoard"
 import { PersonalPanel } from "@/components/tracker/PersonalPanel"
+import { PnlCandlesPanel } from "@/components/tracker/PnlCandlesPanel"
 import { StatsCards } from "@/components/tracker/StatsCards"
 import {
   AlertDialog,
@@ -21,13 +22,10 @@ import { Label } from "@/components/ui/label"
 import { useTrackerData } from "@/hooks/useTrackerData"
 import {
   createBet,
-  createRace,
   getLastRaceImportRun,
-  publishDailySummary,
-  recomputeAndPersistStats,
   refreshRaceData,
+  resolveOtherBetManually,
   removeBet,
-  setRaceImportLock,
   settleRace,
   updateBet,
   updateRaceResult,
@@ -50,11 +48,13 @@ function toBetDraft(form: BetDraftForm) {
   return {
     userId: form.userId,
     betType: form.betType,
+    betName: form.betName,
     stakeTotal: form.stakeTotal,
+    oddsUsed: form.oddsUsed,
     ewTerms: form.ewTerms,
     legs: form.legs.map((leg) => ({
       ...leg,
-      decimalOdds: Number(leg.decimalOdds ?? 0),
+      decimalOdds: leg.decimalOdds ?? null,
     })),
   }
 }
@@ -84,6 +84,7 @@ export function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [adminOpen, setAdminOpen] = useState(false)
   const [identityDraftUserId, setIdentityDraftUserId] = useState("")
+  const [selectedSummaryUserId, setSelectedSummaryUserId] = useState("")
 
   const derivedUserStats = useMemo(() => {
     if (userStats.length > 0) {
@@ -103,7 +104,11 @@ export function App() {
   const resolvedSelectedUserId = hasValidSelectedUser ? selectedUserId : ""
   const identityGateOpen = !bootstrapping && users.length > 0 && !hasValidSelectedUser
   const selectedUser = users.find((user) => user.id === resolvedSelectedUserId)
-  const selectedUserStats = derivedUserStats.find((entry) => entry.userId === resolvedSelectedUserId)
+  const hasValidSummaryUser = users.some((user) => user.id === selectedSummaryUserId)
+  const resolvedSummaryUserId =
+    hasValidSummaryUser ? selectedSummaryUserId : resolvedSelectedUserId || users[0]?.id || ""
+  const selectedSummaryUser = users.find((user) => user.id === resolvedSummaryUserId)
+  const selectedSummaryUserStats = derivedUserStats.find((entry) => entry.userId === resolvedSummaryUserId)
   const activeTabMeta = TABS.find((tab) => tab.id === activeTab) ?? TABS[0]
   const lastRefreshedLabel = formatLastRefreshed(raceImportRun)
   const effectiveSelectedUserId = resolvedSelectedUserId || identityDraftUserId || users[0]?.id || ""
@@ -136,14 +141,9 @@ export function App() {
     await removeBet(bet)
   }
 
-  async function handleCreateRace(input: {
-    day: "Tuesday" | "Wednesday" | "Thursday" | "Friday"
-    offTime: string
-    name: string
-    runners: string[]
-  }) {
-    await createRace(input)
-    await recomputeAndPersistStats()
+  async function handleResolveOtherBet(input: { betId: string; totalReturn: number }) {
+    setActionError(null)
+    await resolveOtherBetManually(input)
   }
 
   async function handleUpdateRaceResult(input: { raceId: string; winner?: string; placed: string[] }) {
@@ -152,10 +152,6 @@ export function App() {
 
   async function handleSettleRace(raceId: string) {
     await settleRace(raceId)
-  }
-
-  async function handleQueueDailySummary(stats: GlobalStats) {
-    await publishDailySummary(stats)
   }
 
   async function handleRefreshRaceData() {
@@ -174,10 +170,6 @@ export function App() {
   function openAdminPanel() {
     setMobileMenuOpen(false)
     setAdminOpen(true)
-  }
-
-  async function handleSetRaceImportLock(input: { raceId: string; locked: boolean; reason?: string }) {
-    await setRaceImportLock(input)
   }
 
   useEffect(() => {
@@ -204,11 +196,21 @@ export function App() {
     }
   }, [hasValidSelectedUser, identityDraftUserId, selectedUserId, users])
 
+  useEffect(() => {
+    if (users.length === 0) {
+      return
+    }
+    if (users.some((user) => user.id === selectedSummaryUserId)) {
+      return
+    }
+    setSelectedSummaryUserId(resolvedSelectedUserId || users[0].id)
+  }, [resolvedSelectedUserId, selectedSummaryUserId, users])
+
   if (bootstrapping) {
     return (
       <main className="mx-auto min-h-screen max-w-6xl p-4 md:p-6">
         <Card>
-          <CardContent className="py-8 text-center">Bootstrapping Firestore season data...</CardContent>
+          <CardContent className="py-8 text-center">Compiling toots...</CardContent>
         </Card>
       </main>
     )
@@ -221,7 +223,7 @@ export function App() {
           <div className="sticky top-0 flex h-screen flex-col gap-5 px-4 py-5">
             <div className="space-y-1">
               <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Cheltenham Festival 2026</div>
-              <h1 className="text-2xl font-semibold">Cash Lads Tracker</h1>
+              <h1 className="text-2xl font-semibold">Ca$h Lad$ Tracker</h1>
             </div>
 
             <nav className="space-y-2">
@@ -240,39 +242,6 @@ export function App() {
             </nav>
 
             <div className="space-y-3 rounded-xl border border-border/70 bg-card px-3 py-3">
-              <div className="space-y-1">
-                <Label htmlFor="desktop-user-switch" className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Current Lad
-                </Label>
-                <select
-                  id="desktop-user-switch"
-                  className="native-select"
-                  value={effectiveSelectedUserId}
-                  onChange={(event) => handleSwitchUser(event.target.value)}
-                >
-                  {users.map((user) => (
-                    <option key={`desktop-user-${user.id}`} value={user.id}>
-                      {user.displayName}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <Button
-                type="button"
-                className="w-full justify-start gap-2"
-                variant="outline"
-                onClick={handleRefreshRaceData}
-                disabled={refreshingRaceData}
-              >
-                <RefreshCw className={cn("size-4", refreshingRaceData ? "animate-spin" : "")} />
-                {refreshingRaceData ? "Refreshing..." : "Refresh race data"}
-              </Button>
-
-              <div className="rounded-md border border-border/70 bg-muted/25 px-2 py-1.5 text-xs text-muted-foreground">
-                Last refreshed: {lastRefreshedLabel}
-              </div>
-
               <Button type="button" className="w-full justify-start gap-2" variant="outline" onClick={openAdminPanel}>
                 <Shield className="size-4" />
                 Admin actions
@@ -332,13 +301,26 @@ export function App() {
 
               {activeTab === "main-cashboard" ? (
                 <div className="space-y-4">
-                  <StatsCards title="Main Cashboard" stats={derivedGlobalStats} />
+                  <StatsCards
+                    title="Main Cashboard"
+                    middleContent={<PnlCandlesPanel bets={bets} races={races} />}
+                    stats={derivedGlobalStats}
+                  />
                   <MainBoard bets={bets} users={users} races={races} stats={derivedUserStats} />
                 </div>
               ) : null}
 
               {activeTab === "user-summary" ? (
-                <PersonalPanel user={selectedUser} userStats={selectedUserStats} bets={bets} races={races} />
+                <PersonalPanel
+                  users={users}
+                  user={selectedSummaryUser}
+                  userStats={selectedSummaryUserStats}
+                  bets={bets}
+                  races={races}
+                  selectedSummaryUserId={resolvedSummaryUserId}
+                  onSelectSummaryUserId={setSelectedSummaryUserId}
+                  onResolveOtherBet={handleResolveOtherBet}
+                />
               ) : null}
             </div>
           </main>
@@ -357,7 +339,7 @@ export function App() {
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Menu</div>
-                <div className="text-base font-semibold">Cash Lads Tracker</div>
+                <div className="text-base font-semibold">Ca$h Lad$ Tracker</div>
               </div>
               <Button type="button" size="icon" variant="ghost" aria-label="Close menu" onClick={() => setMobileMenuOpen(false)}>
                 <X className="size-5" />
@@ -383,42 +365,6 @@ export function App() {
             </nav>
 
             <div className="mt-5 space-y-3 rounded-xl border border-border/70 bg-card px-3 py-3">
-              <div className="space-y-1">
-                <Label htmlFor="mobile-user-switch" className="text-xs uppercase tracking-wide text-muted-foreground">
-                  Current Lad
-                </Label>
-                <select
-                  id="mobile-user-switch"
-                  className="native-select"
-                  value={effectiveSelectedUserId}
-                  onChange={(event) => handleSwitchUser(event.target.value)}
-                >
-                  {users.map((user) => (
-                    <option key={`mobile-user-${user.id}`} value={user.id}>
-                      {user.displayName}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <Button
-                type="button"
-                className="w-full justify-start gap-2"
-                variant="outline"
-                onClick={() => {
-                  setMobileMenuOpen(false)
-                  void handleRefreshRaceData()
-                }}
-                disabled={refreshingRaceData}
-              >
-                <RefreshCw className={cn("size-4", refreshingRaceData ? "animate-spin" : "")} />
-                {refreshingRaceData ? "Refreshing..." : "Refresh race data"}
-              </Button>
-
-              <div className="rounded-md border border-border/70 bg-muted/25 px-2 py-1.5 text-xs text-muted-foreground">
-                Last refreshed: {lastRefreshedLabel}
-              </div>
-
               <Button type="button" className="w-full justify-start gap-2" variant="outline" onClick={openAdminPanel}>
                 <Shield className="size-4" />
                 Admin actions
@@ -451,7 +397,7 @@ export function App() {
           <AlertDialogHeader>
             <AlertDialogTitle>Choose Your Lad</AlertDialogTitle>
             <AlertDialogDescription>
-              Pick your identity once. This is saved locally and used across New Bet, Main, and My Summary.
+              Pick your identity to start. It is saved locally and can be changed later in Admin actions.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-1">
@@ -499,14 +445,42 @@ export function App() {
               </Button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 md:p-6">
+              <div className="mb-4 grid gap-3 rounded-xl border border-border/70 bg-card p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                <div className="space-y-1">
+                  <Label htmlFor="admin-user-switch" className="text-xs uppercase tracking-wide text-muted-foreground">
+                    Active Lad
+                  </Label>
+                  <select
+                    id="admin-user-switch"
+                    className="native-select"
+                    value={effectiveSelectedUserId}
+                    onChange={(event) => handleSwitchUser(event.target.value)}
+                  >
+                    {users.map((user) => (
+                      <option key={`admin-user-${user.id}`} value={user.id}>
+                        {user.displayName}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="text-xs text-muted-foreground">Last refreshed: {lastRefreshedLabel}</div>
+                </div>
+                <Button
+                  type="button"
+                  className="justify-start gap-2"
+                  variant="outline"
+                  onClick={() => {
+                    void handleRefreshRaceData()
+                  }}
+                  disabled={refreshingRaceData}
+                >
+                  <RefreshCw className={cn("size-4", refreshingRaceData ? "animate-spin" : "")} />
+                  {refreshingRaceData ? "Refreshing..." : "Refresh race data"}
+                </Button>
+              </div>
               <AdminPanel
                 races={races}
-                globalStats={derivedGlobalStats}
-                onCreateRace={handleCreateRace}
                 onUpdateResult={handleUpdateRaceResult}
                 onSettleRace={handleSettleRace}
-                onQueueDailySummary={handleQueueDailySummary}
-                onSetImportLock={handleSetRaceImportLock}
               />
             </div>
           </div>

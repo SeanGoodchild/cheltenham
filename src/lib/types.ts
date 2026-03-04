@@ -23,6 +23,8 @@ export type Bet = {
   season: string
   userId: string
   betType: BetType
+  betName?: string
+  oddsUsed?: number
   legs: BetLeg[]
   legRaceIds: string[]
   stakeTotal: number
@@ -143,6 +145,8 @@ export type UserStats = {
   roasPct: number
   winPct: number
   betsPlaced: number
+  averageOdds: number
+  biggestLoss: number
   biggestWin: number
   averageStake: number
 }
@@ -151,9 +155,11 @@ export type GlobalStats = {
   totalStaked: number
   totalReturns: number
   averageStake: number
+  averageOdds: number
   roasPct: number
   winPct: number
   betsPlaced: number
+  biggestLoss: number
   biggestWin: number
   biggestWinUserId?: string
   updatedAt: string

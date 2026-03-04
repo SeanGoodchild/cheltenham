@@ -1,25 +1,36 @@
+import type { ReactNode } from "react"
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { formatCurrency, formatPercent } from "@/lib/format"
+import { formatCurrency, formatOdds, formatPercent } from "@/lib/format"
 import type { GlobalStats, UserStats } from "@/lib/types"
 
 type StatsCardsProps = {
   title: string
-  stats: Pick<GlobalStats | UserStats, "totalStaked" | "totalReturns" | "roasPct" | "winPct" | "betsPlaced" | "averageStake"> & {
-    profitLoss?: number
-    biggestWin?: number
-  }
+  middleContent?: ReactNode
+  stats: Pick<
+    GlobalStats | UserStats,
+    | "totalStaked"
+    | "totalReturns"
+    | "roasPct"
+    | "averageStake"
+    | "averageOdds"
+    | "winPct"
+    | "betsPlaced"
+    | "biggestLoss"
+    | "biggestWin"
+  >
 }
 
 function StatItem({ label, value }: { label: string; value: string }) {
   return (
-    <div className="panel-subtle min-w-[160px]">
+    <div className="panel-subtle min-w-0">
       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="mt-1 text-base font-semibold">{value}</div>
+      <div className="mt-1 truncate text-base font-semibold">{value}</div>
     </div>
   )
 }
 
-export function StatsCards({ title, stats }: StatsCardsProps) {
+export function StatsCards({ title, middleContent, stats }: StatsCardsProps) {
   const meterTarget = Math.max(2500, Math.ceil(stats.totalStaked / 250) * 250)
   const meterPct = Math.min(100, (stats.totalStaked / meterTarget) * 100)
 
@@ -32,7 +43,9 @@ export function StatsCards({ title, stats }: StatsCardsProps) {
         <div className="panel-subtle">
           <div className="flex items-center justify-between text-xs uppercase tracking-wide text-muted-foreground">
             <span>Cash-o-Meter</span>
-            <span>{formatCurrency(stats.totalStaked)} / {formatCurrency(meterTarget)}</span>
+            <span>
+              {formatCurrency(stats.totalStaked)} / {formatCurrency(meterTarget)}
+            </span>
           </div>
           <div className="mt-2 h-3 overflow-hidden rounded-full bg-muted">
             <div
@@ -42,21 +55,18 @@ export function StatsCards({ title, stats }: StatsCardsProps) {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <div className="grid auto-cols-fr grid-flow-col gap-2">
+        {middleContent}
+
+        <div className="grid grid-cols-3 gap-2">
           <StatItem label="Total Staked" value={formatCurrency(stats.totalStaked)} />
           <StatItem label="Total Returns" value={formatCurrency(stats.totalReturns)} />
-          <StatItem label="Bets Placed" value={String(stats.betsPlaced)} />
-          <StatItem label="Average Stake" value={formatCurrency(stats.averageStake)} />
           <StatItem label="ROAS" value={formatPercent(stats.roasPct)} />
+          <StatItem label="Avg Stake" value={formatCurrency(stats.averageStake)} />
+          <StatItem label="Avg Odds" value={stats.averageOdds > 0 ? formatOdds(stats.averageOdds) : "-"} />
           <StatItem label="Win %" value={formatPercent(stats.winPct)} />
-          {typeof stats.profitLoss === "number" ? (
-            <StatItem label="Profit/Loss" value={formatCurrency(stats.profitLoss)} />
-          ) : null}
-          {typeof stats.biggestWin === "number" ? (
-            <StatItem label="Biggest Win" value={formatCurrency(stats.biggestWin)} />
-          ) : null}
-          </div>
+          <StatItem label="Bets Placed" value={String(stats.betsPlaced)} />
+          <StatItem label="Biggest Loss" value={formatCurrency(stats.biggestLoss)} />
+          <StatItem label="Biggest Win" value={formatCurrency(stats.biggestWin)} />
         </div>
       </CardContent>
     </Card>

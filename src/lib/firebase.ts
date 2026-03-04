@@ -3,12 +3,14 @@ import type { Bet, GlobalStats, Race, RaceDay, RaceImportRun, UserProfile, UserS
 export type BetDraftInput = {
   userId: string
   betType: Bet["betType"]
+  betName?: string
   legs: Array<{
     raceId: string
     selectionName: string
-    decimalOdds: number
+    decimalOdds?: number | null
     horseUid?: number
   }>
+  oddsUsed?: number | null
   stakeTotal: number
   ewTerms?: {
     placesPaid: number
@@ -257,6 +259,13 @@ export async function updateBet(
 export async function removeBet(bet: Bet): Promise<void> {
   await request<{ ok: true }>(`/api/bets/${bet.id}`, {
     method: "DELETE",
+  })
+}
+
+export async function resolveOtherBetManually(input: { betId: string; totalReturn: number }): Promise<void> {
+  await request<{ ok: true }>(`/api/bets/${input.betId}/manual-settle`, {
+    method: "POST",
+    body: JSON.stringify({ totalReturn: input.totalReturn }),
   })
 }
 

@@ -46,8 +46,15 @@ type TrackerState = {
 type BetDraftInput = {
   userId: string
   betType: BetType
-  legs: Array<Pick<BetLeg, "raceId" | "selectionName" | "decimalOdds" | "horseUid">>
+  betName?: string
+  legs: Array<{
+    raceId: string
+    selectionName: string
+    decimalOdds?: number | null
+    horseUid?: number
+  }>
   stakeTotal: number
+  oddsUsed?: number | null
   ewTerms?: EwTerms
 }
 
@@ -67,6 +74,10 @@ type RaceResultInput = {
 type ImportLockInput = {
   locked: boolean
   reason?: string
+}
+
+type ManualOtherSettleInput = {
+  totalReturn: number
 }
 
 type CloudfrontRunner = {
@@ -198,6 +209,10 @@ function formatHorseName(name: string): string {
 
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100
+}
+
+function isValidOdds(value: number | undefined | null): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 1
 }
 
 function roundTo(value: number, decimals: number): number {
@@ -472,7 +487,32 @@ function calculateEachWayReturn(
   return winReturn + placeReturn
 }
 
-function calculateAccumulatorReturn(stake: number, legs: BetLeg[]): number {
+function resolveBetOddsUsed(bet: Pick<Bet, "betType" | "oddsUsed" | "legs">): number | null {
+  if (isValidOdds(bet.oddsUsed)) {
+    return bet.oddsUsed
+  }
+
+  if (bet.betType === "accumulator") {
+    if (!bet.legs.length) {
+      return null
+    }
+    const combined = bet.legs.reduce((acc, leg) => {
+      const odds = isValidOdds(leg.decimalOdds) ? leg.decimalOdds : 1
+      return acc * odds
+    }, 1)
+    return isValidOdds(combined) ? roundMoney(combined) : null
+  }
+
+  if (bet.betType === "other") {
+    return null
+  }
+
+  const firstLegOdds = bet.legs[0]?.decimalOdds
+  return isValidOdds(firstLegOdds) ? firstLegOdds : null
+}
+
+function calculateAccumulatorReturn(stake: number, bet: Pick<Bet, "legs" | "oddsUsed" | "betType">): number {
+  const legs = bet.legs
   if (legs.some((leg) => leg.result === "lose")) {
     return 0
   }
@@ -482,14 +522,21 @@ function calculateAccumulatorReturn(stake: number, legs: BetLeg[]): number {
     return 0
   }
 
-  const combinedOdds = legs.reduce((acc, leg) => {
-    if (leg.result === "void") {
+  let combinedOdds = resolveBetOddsUsed(bet) ?? 1
+  if (!isValidOdds(combinedOdds)) {
+    combinedOdds = 1
+  }
+
+  const voidOddsFactor = legs.reduce((acc, leg) => {
+    if (leg.result !== "void") {
       return acc
     }
-    return acc * leg.decimalOdds
+    const legOdds = isValidOdds(leg.decimalOdds) ? leg.decimalOdds : 1
+    return acc * legOdds
   }, 1)
 
-  return stake * combinedOdds
+  const adjustedOdds = Math.max(1, combinedOdds / Math.max(1, voidOddsFactor))
+  return stake * adjustedOdds
 }
 
 function calculateBetReturn(bet: Bet): number {
@@ -498,33 +545,49 @@ function calculateBetReturn(bet: Bet): number {
     return 0
   }
 
+  const oddsUsed = resolveBetOddsUsed(bet)
+  if (!isValidOdds(oddsUsed)) {
+    return 0
+  }
+
   if (bet.betType === "single" || bet.betType === "other") {
-    return calculateSingleReturn(bet.stakeTotal, firstLeg.decimalOdds, firstLeg.result)
+    return calculateSingleReturn(bet.stakeTotal, oddsUsed, firstLeg.result)
   }
 
   if (bet.betType === "each_way") {
     return calculateEachWayReturn(
       bet.stakeTotal,
-      firstLeg.decimalOdds,
+      oddsUsed,
       firstLeg.result,
       bet.ewTerms?.placeFraction ?? 0.2,
     )
   }
 
-  return calculateAccumulatorReturn(bet.stakeTotal, bet.legs)
+  return calculateAccumulatorReturn(bet.stakeTotal, bet)
 }
 
 function computeUserStats(user: UserProfile, bets: Bet[]): UserStats {
   const userBets = bets.filter((bet) => bet.userId === user.id)
-  const totalStaked = roundMoney(userBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
-  const totalReturns = roundMoney(userBets.reduce((acc, bet) => acc + (bet.totalReturn ?? 0), 0))
-  const profitLoss = roundMoney(totalReturns - totalStaked)
-  const betsPlaced = userBets.length
   const settledBets = userBets.filter((bet) => bet.status === "settled")
+  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
+  const oddsValues = userBets
+    .map((bet) => resolveBetOddsUsed(bet))
+    .filter((value): value is number => isValidOdds(value))
+  const averageOdds =
+    oddsValues.length > 0
+      ? roundMoney(oddsValues.reduce((acc, value) => acc + value, 0) / oddsValues.length)
+      : 0
+  const totalStaked = roundMoney(userBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
+  const totalReturns = roundMoney(settledBets.reduce((acc, bet) => acc + (bet.totalReturn ?? 0), 0))
+  const profitLoss = roundMoney(totalReturns - settledStaked)
+  const betsPlaced = userBets.length
   const settledWins = settledBets.filter((bet) => (bet.totalReturn ?? 0) > 0).length
 
-  const roasPct = totalStaked > 0 ? roundMoney((totalReturns / totalStaked) * 100) : 0
+  const roasPct = settledStaked > 0 ? roundMoney((totalReturns / settledStaked) * 100) : 0
   const winPct = settledBets.length > 0 ? roundMoney((settledWins / settledBets.length) * 100) : 0
+  const biggestLoss = roundMoney(
+    settledBets.reduce((acc, bet) => Math.min(acc, bet.profitLoss ?? 0), 0),
+  )
   const biggestWin = roundMoney(
     settledBets.reduce((acc, bet) => Math.max(acc, bet.profitLoss ?? 0), 0),
   )
@@ -538,6 +601,8 @@ function computeUserStats(user: UserProfile, bets: Bet[]): UserStats {
     roasPct,
     winPct,
     betsPlaced,
+    averageOdds,
+    biggestLoss,
     biggestWin,
     averageStake,
   }
@@ -545,23 +610,36 @@ function computeUserStats(user: UserProfile, bets: Bet[]): UserStats {
 
 function computeGlobalStats(bets: Bet[], users: UserProfile[], atIso: string): GlobalStats {
   const byUser = users.map((user) => computeUserStats(user, bets))
+  const oddsValues = bets
+    .map((bet) => resolveBetOddsUsed(bet))
+    .filter((value): value is number => isValidOdds(value))
   const totalStaked = roundMoney(byUser.reduce((acc, stat) => acc + stat.totalStaked, 0))
   const totalReturns = roundMoney(byUser.reduce((acc, stat) => acc + stat.totalReturns, 0))
   const betsPlaced = byUser.reduce((acc, stat) => acc + stat.betsPlaced, 0)
   const averageStake = betsPlaced > 0 ? roundMoney(totalStaked / betsPlaced) : 0
-  const roasPct = totalStaked > 0 ? roundMoney((totalReturns / totalStaked) * 100) : 0
+  const averageOdds =
+    oddsValues.length > 0
+      ? roundMoney(oddsValues.reduce((acc, value) => acc + value, 0) / oddsValues.length)
+      : 0
   const settledBets = bets.filter((bet) => bet.status === "settled")
+  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
   const settledWins = settledBets.filter((bet) => (bet.totalReturn ?? 0) > 0).length
+  const roasPct = settledStaked > 0 ? roundMoney((totalReturns / settledStaked) * 100) : 0
   const winPct = settledBets.length > 0 ? roundMoney((settledWins / settledBets.length) * 100) : 0
+  const biggestLoss = roundMoney(
+    settledBets.reduce((acc, bet) => Math.min(acc, bet.profitLoss ?? 0), 0),
+  )
   const biggestWinner = byUser.sort((a, b) => b.biggestWin - a.biggestWin)[0]
 
   return {
     totalStaked,
     totalReturns,
     averageStake,
+    averageOdds,
     roasPct,
     winPct,
     betsPlaced,
+    biggestLoss,
     biggestWin: biggestWinner?.biggestWin ?? 0,
     biggestWinUserId: biggestWinner?.userId,
     updatedAt: atIso,
@@ -718,6 +796,8 @@ function mapBetDoc(raw: Record<string, unknown>, id: string): Bet {
     season: String(raw.season ?? CURRENT_SEASON),
     userId: String(raw.userId ?? ""),
     betType: (raw.betType as BetType) ?? "single",
+    betName: typeof raw.betName === "string" ? raw.betName : undefined,
+    oddsUsed: isValidOdds(Number(raw.oddsUsed)) ? Number(raw.oddsUsed) : undefined,
     legs: Array.isArray(raw.legs)
       ? raw.legs.map((leg) => {
           const row = leg as Record<string, unknown>
@@ -766,6 +846,8 @@ function mapUserStatsDoc(raw: Record<string, unknown>, id: string): UserStats {
     roasPct: Number(raw.roasPct ?? 0),
     winPct: Number(raw.winPct ?? 0),
     betsPlaced: Number(raw.betsPlaced ?? 0),
+    averageOdds: Number(raw.averageOdds ?? 0),
+    biggestLoss: Number(raw.biggestLoss ?? 0),
     biggestWin: Number(raw.biggestWin ?? 0),
     averageStake: Number(raw.averageStake ?? 0),
   }
@@ -817,9 +899,11 @@ async function getGlobalStats(): Promise<GlobalStats | null> {
     totalStaked: Number(raw.totalStaked ?? 0),
     totalReturns: Number(raw.totalReturns ?? 0),
     averageStake: Number(raw.averageStake ?? 0),
+    averageOdds: Number(raw.averageOdds ?? 0),
     roasPct: Number(raw.roasPct ?? 0),
     winPct: Number(raw.winPct ?? 0),
     betsPlaced: Number(raw.betsPlaced ?? 0),
+    biggestLoss: Number(raw.biggestLoss ?? 0),
     biggestWin: Number(raw.biggestWin ?? 0),
     biggestWinUserId: typeof raw.biggestWinUserId === "string" ? raw.biggestWinUserId : undefined,
     updatedAt: String(raw.updatedAt ?? nowIso()),
@@ -848,20 +932,55 @@ async function recomputeAndPersistStats(): Promise<void> {
 
 function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: string): Bet {
   const now = nowIso()
+  const normalizedBetName = input.betName?.trim()
   if (!input.userId) {
     throw new Error("Pick a user")
   }
+  if (input.stakeTotal <= 0) {
+    throw new Error("Stake must be greater than zero")
+  }
+
+  if (input.betType === "other") {
+    if (!normalizedBetName) {
+      throw new Error("Other bets need a name")
+    }
+
+    const requestedOddsUsed = Number(input.oddsUsed)
+    const oddsUsed = isValidOdds(requestedOddsUsed) ? requestedOddsUsed : undefined
+    const syntheticLeg: BetLeg = {
+      raceId: "__other__",
+      selectionName: normalizedBetName,
+      decimalOdds: oddsUsed ?? 1,
+      horseUid: undefined,
+      result: "pending",
+    }
+
+    return {
+      id: existingId ?? "",
+      season: CURRENT_SEASON,
+      userId: input.userId,
+      betType: "other",
+      betName: normalizedBetName,
+      oddsUsed,
+      legs: [syntheticLeg],
+      legRaceIds: [syntheticLeg.raceId],
+      stakeTotal: Number(input.stakeTotal),
+      ewTerms: undefined,
+      lockAt: "2099-12-31T23:59:59.999Z",
+      status: "open",
+      createdAt: now,
+      updatedAt: now,
+    }
+  }
+
   if (!input.legs.length) {
     throw new Error("Add at least one bet leg")
   }
   if (input.betType !== "accumulator" && input.legs.length !== 1) {
-    throw new Error("Single, each-way, and other bets must have exactly one leg")
+    throw new Error("Single and each-way bets must have exactly one leg")
   }
   if (input.betType === "each_way" && !input.ewTerms) {
     throw new Error("Each-way terms are required")
-  }
-  if (input.stakeTotal <= 0) {
-    throw new Error("Stake must be greater than zero")
   }
 
   const legLifecycles: Array<Race["lifecycle"]> = []
@@ -873,10 +992,12 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
     if (!validateRunnerSelection(leg.selectionName, race, leg.horseUid)) {
       throw new Error(`Selection '${leg.selectionName}' is not in the runner list for ${race.name}`)
     }
-    const decimalOdds = Number(leg.decimalOdds)
-    if (!Number.isFinite(decimalOdds) || decimalOdds < 1) {
+    const parsedLegOdds = Number(leg.decimalOdds)
+    const hasLegOdds = isValidOdds(parsedLegOdds)
+    if (input.betType !== "accumulator" && !hasLegOdds) {
       throw new Error("Decimal odds are required for every leg and must be >= 1.0")
     }
+    const decimalOdds = hasLegOdds ? parsedLegOdds : 1
     const matchedRunner = findRaceRunner(race, leg.selectionName, leg.horseUid)
     const lifecycle = deriveRaceLifecycle(race.offTime, race.result, now)
     legLifecycles.push(lifecycle)
@@ -893,6 +1014,26 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
     }
   })
 
+  const autoOddsUsed =
+    input.betType === "accumulator"
+      ? roundTo(
+          formattedLegs.reduce((acc, leg) => {
+            const odds = isValidOdds(leg.decimalOdds) ? leg.decimalOdds : 1
+            return acc * odds
+          }, 1),
+          4,
+        )
+      : formattedLegs[0]?.decimalOdds
+  const requestedOddsUsed = Number(input.oddsUsed)
+  const oddsUsed = isValidOdds(requestedOddsUsed)
+    ? requestedOddsUsed
+    : isValidOdds(autoOddsUsed)
+      ? autoOddsUsed
+      : null
+  if (!isValidOdds(oddsUsed)) {
+    throw new Error("Final decimal odds are required and must be >= 1.0")
+  }
+
   const lockAt = deriveLockAt(formattedLegs, races)
   const allLegsComplete = legLifecycles.every((entry) => entry === "complete")
   if (new Date(now).getTime() > new Date(lockAt).getTime() && !allLegsComplete) {
@@ -904,6 +1045,8 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
     season: CURRENT_SEASON,
     userId: input.userId,
     betType: input.betType,
+    betName: undefined,
+    oddsUsed,
     legs: formattedLegs,
     legRaceIds: [...new Set(formattedLegs.map((leg) => leg.raceId))],
     stakeTotal: Number(input.stakeTotal),
@@ -1030,6 +1173,49 @@ async function removeBet(betId: string): Promise<void> {
   await betsCol(db).doc(betId).delete()
   await recomputeAndPersistStats()
   await writeEvent("bet_deleted", { betId })
+}
+
+async function resolveOtherBetManually(betId: string, input: ManualOtherSettleInput): Promise<void> {
+  const snapshot = await betsCol(db).doc(betId).get()
+  if (!snapshot.exists) {
+    throw new Error("Bet not found")
+  }
+
+  const bet = mapBetDoc(snapshot.data() as Record<string, unknown>, snapshot.id)
+  if (bet.betType !== "other") {
+    throw new Error("Only 'other' bets can be manually resolved here")
+  }
+  if (bet.status === "settled") {
+    throw new Error("Bet is already settled")
+  }
+
+  const parsedReturn = Number(input.totalReturn)
+  if (!Number.isFinite(parsedReturn) || parsedReturn < 0) {
+    throw new Error("Manual return must be a valid number >= 0")
+  }
+
+  const now = nowIso()
+  const totalReturn = roundMoney(parsedReturn)
+  const profitLoss = roundMoney(totalReturn - bet.stakeTotal)
+  const legResult: LegResult =
+    totalReturn === 0 ? "lose" : Math.abs(totalReturn - bet.stakeTotal) < 0.005 ? "void" : "win"
+
+  await betsCol(db)
+    .doc(betId)
+    .set(
+      {
+        status: "settled",
+        settledAt: now,
+        updatedAt: now,
+        totalReturn,
+        profitLoss,
+        legs: bet.legs.map((leg) => ({ ...leg, result: legResult })),
+      },
+      { merge: true },
+    )
+
+  await recomputeAndPersistStats()
+  await writeEvent("bet_manual_settled", { betId, totalReturn, profitLoss })
 }
 
 async function createRace(input: RaceDraftInput): Promise<void> {
@@ -2315,6 +2501,17 @@ export async function handleApiRequest(request: Request): Promise<Response> {
         return errorResponse("Missing bet id", 400)
       }
       await removeBet(betId)
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
+
+    if (request.method === "POST" && pathname.startsWith("/api/bets/") && pathname.endsWith("/manual-settle")) {
+      const betId = pathname.split("/")[3]
+      if (!betId) {
+        return errorResponse("Missing bet id", 400)
+      }
+      const input = await parseJson<ManualOtherSettleInput>(request)
+      await resolveOtherBetManually(betId, input)
       await refreshAndBroadcastIfChanged()
       return jsonResponse({ ok: true })
     }

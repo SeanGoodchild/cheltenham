@@ -16,6 +16,10 @@ function roundMoney(value: number): number {
   return Math.round(value * 100) / 100
 }
 
+function isValidOdds(value: number | undefined | null): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 1
+}
+
 export function deriveLockAt(legs: Array<Pick<BetLeg, "raceId">>, races: Race[]): string {
   const times = legs
     .map((leg) => races.find((race) => race.id === leg.raceId)?.offTime)
@@ -92,7 +96,32 @@ function calculateEachWayReturn(
   return winReturn + placeReturn
 }
 
-function calculateAccumulatorReturn(stake: number, legs: BetLeg[]): number {
+export function resolveBetOddsUsed(bet: Pick<Bet, "betType" | "oddsUsed" | "legs">): number | null {
+  if (isValidOdds(bet.oddsUsed)) {
+    return bet.oddsUsed
+  }
+
+  if (bet.betType === "accumulator") {
+    if (!bet.legs.length) {
+      return null
+    }
+    const combined = bet.legs.reduce((acc, leg) => {
+      const odds = isValidOdds(leg.decimalOdds) ? leg.decimalOdds : 1
+      return acc * odds
+    }, 1)
+    return isValidOdds(combined) ? roundMoney(combined) : null
+  }
+
+  if (bet.betType === "other") {
+    return null
+  }
+
+  const firstLegOdds = bet.legs[0]?.decimalOdds
+  return isValidOdds(firstLegOdds) ? firstLegOdds : null
+}
+
+function calculateAccumulatorReturn(stake: number, bet: Pick<Bet, "legs" | "oddsUsed" | "betType">): number {
+  const legs = bet.legs
   if (legs.some((leg) => leg.result === "lose")) {
     return 0
   }
@@ -102,14 +131,21 @@ function calculateAccumulatorReturn(stake: number, legs: BetLeg[]): number {
     return 0
   }
 
-  const combinedOdds = legs.reduce((acc, leg) => {
-    if (leg.result === "void") {
+  let combinedOdds = resolveBetOddsUsed(bet) ?? 1
+  if (!isValidOdds(combinedOdds)) {
+    combinedOdds = 1
+  }
+
+  const voidOddsFactor = legs.reduce((acc, leg) => {
+    if (leg.result !== "void") {
       return acc
     }
-    return acc * leg.decimalOdds
+    const legOdds = isValidOdds(leg.decimalOdds) ? leg.decimalOdds : 1
+    return acc * legOdds
   }, 1)
 
-  return stake * combinedOdds
+  const adjustedOdds = Math.max(1, combinedOdds / Math.max(1, voidOddsFactor))
+  return stake * adjustedOdds
 }
 
 export function isBetSettleable(bet: Bet): boolean {
@@ -126,30 +162,60 @@ export function calculateBetReturn(bet: Bet): number {
     return 0
   }
 
+  const oddsUsed = resolveBetOddsUsed(bet)
+  if (!isValidOdds(oddsUsed)) {
+    return 0
+  }
+
   if (bet.betType === "single" || bet.betType === "other") {
-    return calculateSingleReturn(bet.stakeTotal, firstLeg.decimalOdds, firstLeg.result)
+    return calculateSingleReturn(bet.stakeTotal, oddsUsed, firstLeg.result)
   }
 
   if (bet.betType === "each_way") {
     const placeFraction = bet.ewTerms?.placeFraction ?? 0.2
-    return calculateEachWayReturn(bet.stakeTotal, firstLeg.decimalOdds, firstLeg.result, placeFraction)
+    return calculateEachWayReturn(bet.stakeTotal, oddsUsed, firstLeg.result, placeFraction)
   }
 
-  return calculateAccumulatorReturn(bet.stakeTotal, bet.legs)
+  return calculateAccumulatorReturn(bet.stakeTotal, bet)
+}
+
+export function calculateBetPotentialReturn(bet: Pick<Bet, "betType" | "stakeTotal" | "ewTerms" | "legs" | "oddsUsed">): number {
+  const oddsUsed = resolveBetOddsUsed(bet)
+  if (!isValidOdds(oddsUsed) || bet.stakeTotal <= 0) {
+    return 0
+  }
+
+  if (bet.betType === "each_way") {
+    const placeFraction = bet.ewTerms?.placeFraction ?? 0.2
+    return calculateEachWayReturn(bet.stakeTotal, oddsUsed, "win", placeFraction)
+  }
+
+  return bet.stakeTotal * oddsUsed
 }
 
 export function computeUserStats(user: UserProfile, bets: Bet[]): UserStats {
   const userBets = bets.filter((bet) => bet.userId === user.id)
+  const settledBets = userBets.filter((bet) => bet.status === "settled")
+  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
+  const oddsValues = userBets
+    .map((bet) => resolveBetOddsUsed(bet))
+    .filter((value): value is number => isValidOdds(value))
+  const averageOdds =
+    oddsValues.length > 0
+      ? roundMoney(oddsValues.reduce((acc, value) => acc + value, 0) / oddsValues.length)
+      : 0
 
   const totalStaked = roundMoney(userBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
-  const totalReturns = roundMoney(userBets.reduce((acc, bet) => acc + (bet.totalReturn ?? 0), 0))
-  const profitLoss = roundMoney(totalReturns - totalStaked)
+  const totalReturns = roundMoney(settledBets.reduce((acc, bet) => acc + (bet.totalReturn ?? 0), 0))
+  const profitLoss = roundMoney(totalReturns - settledStaked)
   const betsPlaced = userBets.length
-  const settledBets = userBets.filter((bet) => bet.status === "settled")
   const settledWins = settledBets.filter((bet) => (bet.totalReturn ?? 0) > 0).length
 
-  const roasPct = totalStaked > 0 ? roundMoney((totalReturns / totalStaked) * 100) : 0
+  const roasPct = settledStaked > 0 ? roundMoney((totalReturns / settledStaked) * 100) : 0
   const winPct = settledBets.length > 0 ? roundMoney((settledWins / settledBets.length) * 100) : 0
+  const biggestLoss = roundMoney(
+    settledBets.reduce((acc, bet) => Math.min(acc, bet.profitLoss ?? 0), 0),
+  )
   const biggestWin = roundMoney(
     settledBets.reduce((acc, bet) => Math.max(acc, bet.profitLoss ?? 0), 0),
   )
@@ -163,6 +229,8 @@ export function computeUserStats(user: UserProfile, bets: Bet[]): UserStats {
     roasPct,
     winPct,
     betsPlaced,
+    averageOdds,
+    biggestLoss,
     biggestWin,
     averageStake,
   }
@@ -170,15 +238,26 @@ export function computeUserStats(user: UserProfile, bets: Bet[]): UserStats {
 
 export function computeGlobalStats(bets: Bet[], users: UserProfile[], nowIso: string): GlobalStats {
   const byUser = users.map((user) => computeUserStats(user, bets))
+  const oddsValues = bets
+    .map((bet) => resolveBetOddsUsed(bet))
+    .filter((value): value is number => isValidOdds(value))
   const totalStaked = roundMoney(byUser.reduce((acc, stat) => acc + stat.totalStaked, 0))
   const totalReturns = roundMoney(byUser.reduce((acc, stat) => acc + stat.totalReturns, 0))
   const betsPlaced = byUser.reduce((acc, stat) => acc + stat.betsPlaced, 0)
   const averageStake = betsPlaced > 0 ? roundMoney(totalStaked / betsPlaced) : 0
-  const roasPct = totalStaked > 0 ? roundMoney((totalReturns / totalStaked) * 100) : 0
+  const averageOdds =
+    oddsValues.length > 0
+      ? roundMoney(oddsValues.reduce((acc, value) => acc + value, 0) / oddsValues.length)
+      : 0
 
   const settledBets = bets.filter((bet) => bet.status === "settled")
+  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
   const settledWins = settledBets.filter((bet) => (bet.totalReturn ?? 0) > 0).length
+  const roasPct = settledStaked > 0 ? roundMoney((totalReturns / settledStaked) * 100) : 0
   const winPct = settledBets.length > 0 ? roundMoney((settledWins / settledBets.length) * 100) : 0
+  const biggestLoss = roundMoney(
+    settledBets.reduce((acc, bet) => Math.min(acc, bet.profitLoss ?? 0), 0),
+  )
 
   const biggestWinner = byUser.sort((a, b) => b.biggestWin - a.biggestWin)[0]
 
@@ -186,9 +265,11 @@ export function computeGlobalStats(bets: Bet[], users: UserProfile[], nowIso: st
     totalStaked,
     totalReturns,
     averageStake,
+    averageOdds,
     roasPct,
     winPct,
     betsPlaced,
+    biggestLoss,
     biggestWin: biggestWinner?.biggestWin ?? 0,
     biggestWinUserId: biggestWinner?.userId,
     updatedAt: nowIso,
