@@ -1,4 +1,5 @@
 import type { Bet, GlobalStats, Race, RaceDay, RaceImportRun, UserProfile, UserStats } from "@/lib/types"
+export type TrackerMode = "live" | "simulated"
 
 export type BetDraftInput = {
   userId: string
@@ -74,9 +75,30 @@ function resolveApiBaseUrl(): string {
 }
 
 const API_BASE_URL = resolveApiBaseUrl()
+const TRACKER_MODE_STORAGE_KEY = "cheltenham.trackerMode"
+
+function resolveInitialTrackerMode(): TrackerMode {
+  if (typeof window === "undefined") {
+    return "live"
+  }
+  const raw = window.localStorage.getItem(TRACKER_MODE_STORAGE_KEY)
+  return raw === "simulated" ? "simulated" : "live"
+}
+
+let trackerMode: TrackerMode = resolveInitialTrackerMode()
 
 function apiUrl(path: string): string {
   return API_BASE_URL ? `${API_BASE_URL}${path}` : path
+}
+
+function withMode(path: string): string {
+  if (trackerMode !== "simulated") {
+    return path
+  }
+  if (path !== "/api/state" && path !== "/api/stream") {
+    return path
+  }
+  return `${path}?mode=simulated`
 }
 
 const stateCache: TrackerState = {
@@ -96,17 +118,65 @@ const globalStatsListeners = new Set<(stats: GlobalStats | null) => void>()
 
 let stream: EventSource | null = null
 let streamInitPromise: Promise<void> | null = null
+let pollTimer: ReturnType<typeof setInterval> | null = null
+const SIMULATED_STATE_POLL_MS = 10000
+
+function hasActiveListeners(): boolean {
+  return (
+    usersListeners.size > 0 ||
+    racesListeners.size > 0 ||
+    betsListeners.size > 0 ||
+    userStatsListeners.size > 0 ||
+    globalStatsListeners.size > 0
+  )
+}
+
+function closeRealtimeTransport() {
+  stream?.close()
+  stream = null
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+  streamInitPromise = null
+}
+
+function assertMutable(path: string, init?: RequestInit) {
+  if (trackerMode !== "simulated") {
+    return
+  }
+
+  const method = String(init?.method ?? "GET").toUpperCase()
+  if (method === "GET") {
+    return
+  }
+
+  if (path === "/api/bootstrap" || path === "/api/simulate/races") {
+    return
+  }
+
+  throw new Error("Simulation mode is read-only. Switch to live mode in Admin actions to modify bets or races.")
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  assertMutable(path, init)
   let response: Response
-  const targetUrl = apiUrl(path)
+  const targetUrl = apiUrl(withMode(path))
+  const method = String(init?.method ?? "GET").toUpperCase()
+  const headers = new Headers(init?.headers ?? undefined)
+  const shouldSetJsonHeader =
+    !headers.has("Content-Type") &&
+    method !== "GET" &&
+    method !== "HEAD" &&
+    init?.body !== undefined &&
+    init?.body !== null
+  if (shouldSetJsonHeader) {
+    headers.set("Content-Type", "application/json")
+  }
   try {
     response = await fetch(targetUrl, {
       ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...(init?.headers ?? {}),
-      },
+      headers,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Network request failed"
@@ -160,7 +230,24 @@ async function ensureStream(): Promise<void> {
     const initial = await request<TrackerState>("/api/state")
     publishState(initial)
 
-    stream = new EventSource(apiUrl("/api/stream"))
+    if (trackerMode === "simulated") {
+      const pollState = () =>
+        request<TrackerState>("/api/state")
+          .then((nextState) => publishState(nextState))
+          .catch(() => {
+            // keep previous snapshot; next poll may succeed.
+          })
+
+      pollTimer = setInterval(() => {
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+          return
+        }
+        void pollState()
+      }, SIMULATED_STATE_POLL_MS)
+      return
+    }
+
+    stream = new EventSource(apiUrl(withMode("/api/stream")))
     stream.addEventListener("state", (event) => {
       const parsed = JSON.parse((event as MessageEvent).data) as TrackerState
       publishState(parsed)
@@ -174,9 +261,7 @@ async function ensureStream(): Promise<void> {
   try {
     await streamInitPromise
   } catch (error) {
-    streamInitPromise = null
-    stream?.close()
-    stream = null
+    closeRealtimeTransport()
     throw error
   }
 }
@@ -203,10 +288,30 @@ function makeSubscription<T>(
       userStatsListeners.size === 0 &&
       globalStatsListeners.size === 0
     ) {
-      stream?.close()
-      stream = null
-      streamInitPromise = null
+      closeRealtimeTransport()
     }
+  }
+}
+
+export function getTrackerMode(): TrackerMode {
+  return trackerMode
+}
+
+export function setTrackerMode(nextMode: TrackerMode, options?: { forceReconnect?: boolean }) {
+  const modeChanged = nextMode !== trackerMode
+  if (!modeChanged && !options?.forceReconnect) {
+    return
+  }
+  trackerMode = nextMode
+  if (modeChanged && typeof window !== "undefined") {
+    window.localStorage.setItem(TRACKER_MODE_STORAGE_KEY, nextMode)
+  }
+
+  closeRealtimeTransport()
+  if (hasActiveListeners()) {
+    void ensureStream().catch(() => {
+      // subscription consumer already handles surfaced errors.
+    })
   }
 }
 
@@ -318,4 +423,35 @@ export async function setRaceImportLock(input: RaceImportLockInput): Promise<voi
     method: "POST",
     body: JSON.stringify({ locked: input.locked, reason: input.reason }),
   })
+}
+
+export async function generateRaceSimulation(seed?: string): Promise<{
+  ok: true
+  runId: string
+  seed: string
+  racesSimulated: number
+  generatedAt: string
+}> {
+  return await request<{ ok: true; runId: string; seed: string; racesSimulated: number; generatedAt: string }>(
+    "/api/simulate/races",
+    {
+      method: "POST",
+      body: JSON.stringify(seed ? { seed } : {}),
+    },
+  )
+}
+
+export async function getRaceSimulationInfo(): Promise<{
+  generatedAt?: string
+  runId?: string
+  seed?: string
+  racesSimulated: number
+} | null> {
+  const payload = await request<{
+    ok: true
+    info: { generatedAt?: string; runId?: string; seed?: string; racesSimulated: number } | null
+  }>("/api/simulate/info", {
+    method: "GET",
+  })
+  return payload.info
 }

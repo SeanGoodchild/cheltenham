@@ -33,6 +33,8 @@ const ODDS_IMPORT_TIMEOUT_MS = Number(process.env.ODDS_IMPORT_TIMEOUT_MS ?? 8000
 const ODDS_IMPORT_CONCURRENCY = Number(process.env.ODDS_IMPORT_CONCURRENCY ?? 2)
 const ODDS_IMPORT_USER_AGENT =
   process.env.ODDS_IMPORT_USER_AGENT ?? "CheltenhamBetTracker/1.0 (+manual-refresh)"
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN?.trim() ?? ""
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID?.trim() ?? ""
 
 type TrackerState = {
   users: UserProfile[]
@@ -80,6 +82,10 @@ type ManualOtherSettleInput = {
   totalReturn: number
 }
 
+type TestRaceMessageInput = {
+  raceId?: string
+}
+
 type CloudfrontRunner = {
   horse_uid?: number
   horse_name?: string
@@ -119,6 +125,7 @@ type RaceImportSummary = {
 
 type OddsSnapshot = NonNullable<Race["oddsSnapshot"]>
 type OddsSnapshotEntry = OddsSnapshot[number]
+type TrackerMode = "live" | "simulated"
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -150,6 +157,10 @@ db.settings({ ignoreUndefinedProperties: true })
 
 function seasonDoc(firestore: Firestore) {
   return firestore.collection(FIRESTORE_ROOT).doc(CURRENT_SEASON)
+}
+
+function simulatedSeasonDoc(firestore: Firestore) {
+  return firestore.collection(FIRESTORE_ROOT).doc(`${CURRENT_SEASON}_sim`)
 }
 
 function usersCol(firestore: Firestore) {
@@ -188,6 +199,10 @@ function importJobsCol(firestore: Firestore) {
   return seasonDoc(firestore).collection("import_jobs")
 }
 
+function simulatedRacesCol(firestore: Firestore) {
+  return simulatedSeasonDoc(firestore).collection("races")
+}
+
 function normalizeHorseName(name: string): string {
   return name
     .toLowerCase()
@@ -207,6 +222,17 @@ function formatHorseName(name: string): string {
     .join(" ")
 }
 
+function sanitizeRaceName(name: string): string {
+  const trimmed = name.trim()
+  if (!trimmed) {
+    return ""
+  }
+
+  const cutoffIndex = trimmed.search(/[([]/)
+  const cleaned = (cutoffIndex >= 0 ? trimmed.slice(0, cutoffIndex) : trimmed).trim()
+  return cleaned || trimmed
+}
+
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100
 }
@@ -218,6 +244,15 @@ function isValidOdds(value: number | undefined | null): value is number {
 function roundTo(value: number, decimals: number): number {
   const factor = 10 ** decimals
   return Math.round(value * factor) / factor
+}
+
+function formatMoneyGBP(value: number): string {
+  return new Intl.NumberFormat("en-GB", {
+    style: "currency",
+    currency: "GBP",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value)
 }
 
 function ordinalSuffix(day: number): string {
@@ -335,6 +370,20 @@ function buildIrishRacingOddsUrl(offTimeIso: string): string {
   return `${IRISHRACING_BASE_URL}/${dayToken}/${timeToken}/antepost`
 }
 
+function formatRaceTimeForMessage(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) {
+    return "TBC"
+  }
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: APP_TIMEZONE,
+  }).format(date)
+}
+
 function toRaceDay(iso: string): RaceDay {
   const weekday = new Intl.DateTimeFormat("en-GB", {
     weekday: "long",
@@ -350,8 +399,231 @@ function runnerToDisplayName(name: string): string {
   return formatHorseName(name)
 }
 
+function pickRandom<T>(values: readonly T[]): T {
+  return values[Math.floor(Math.random() * values.length)] as T
+}
+
+async function sendTelegramMessage(text: string): Promise<void> {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    throw new Error("Telegram not configured (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)")
+  }
+
+  const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      chat_id: TELEGRAM_CHAT_ID,
+      text,
+      disable_web_page_preview: true,
+    }),
+  })
+
+  const responseBody = await response.text()
+  if (!response.ok) {
+    throw new Error(`Telegram send failed (${response.status}): ${responseBody.slice(0, 300)}`)
+  }
+
+  const payload = JSON.parse(responseBody) as { ok?: boolean; description?: string }
+  if (!payload.ok) {
+    throw new Error(`Telegram rejected message: ${payload.description ?? "unknown error"}`)
+  }
+}
+
+async function dispatchRaceResultTelegramNotification(
+  notificationId: string,
+  race: Race,
+  settledAt: string,
+  options?: { isTest?: boolean },
+): Promise<void> {
+  const [races, users, bets] = await Promise.all([getRaces(), getUsers(), getBets()])
+  const notificationNow = nowIso()
+  const betsWithDerivedStatus = bets.map((bet) => ({
+    ...bet,
+    status: getDerivedBetStatus(bet, notificationNow),
+  }))
+  const userStats = users.map((user) => computeUserStats(user, betsWithDerivedStatus))
+  const usersById = new Map(users.map((user) => [user.id, user]))
+  const leader = [...userStats]
+    .sort((a, b) => {
+      if (a.profitLoss !== b.profitLoss) {
+        return b.profitLoss - a.profitLoss
+      }
+      const aName = usersById.get(a.userId)?.displayName ?? a.userId
+      const bName = usersById.get(b.userId)?.displayName ?? b.userId
+      return aName.localeCompare(bName)
+    })
+    .at(0)
+
+  const leaderName = leader ? usersById.get(leader.userId)?.displayName ?? leader.userId : "No one"
+  const leaderProfit = leader?.profitLoss ?? 0
+  const nextRace =
+    races
+      .filter((entry) => entry.status !== "settled" && new Date(entry.offTime).getTime() > Date.now())
+      .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0] ??
+    races
+      .filter(
+        (entry) =>
+          entry.status !== "settled" && new Date(entry.offTime).getTime() > new Date(race.offTime).getTime(),
+      )
+      .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0]
+  const nextRaceTime = nextRace ? formatRaceTimeForMessage(nextRace.offTime) : "TBC"
+
+  const intros = [
+    `Result is in for ${race.name}.`,
+    `${race.name} is settled.`,
+    `That one is done: ${race.name}.`,
+    `${race.name} has just landed.`,
+  ] as const
+  const leaderDescriptions = [
+    "commanding",
+    "narrow",
+    "scrappy",
+    "cheeky",
+    "storming",
+    "well-earned",
+  ] as const
+
+  const introPrefix = options?.isTest ? "[TEST] " : ""
+  const message = `${introPrefix}${pickRandom(intros)} Next race starts at ${nextRaceTime}.
+
+${leaderName} is leading the pack with a ${pickRandom(leaderDescriptions)} ${formatMoneyGBP(leaderProfit)} profit.`
+
+  try {
+    await sendTelegramMessage(message)
+    await notificationsCol(db)
+      .doc(notificationId)
+      .set(
+        {
+          status: "sent",
+          updatedAt: nowIso(),
+          payload: {
+            raceId: race.id,
+            raceName: race.name,
+            winner: race.result.winner,
+            settledAt,
+            nextRaceTime,
+            leaderName,
+            leaderProfit,
+            message,
+          },
+        },
+        { merge: true },
+      )
+    await writeEvent(options?.isTest ? "telegram_sent_test_race_result" : "telegram_sent_race_result", {
+      notificationId,
+      raceId: race.id,
+    })
+  } catch (error) {
+    const failureMessage = error instanceof Error ? error.message : String(error)
+    await notificationsCol(db)
+      .doc(notificationId)
+      .set(
+        {
+          status: "failed",
+          error: failureMessage,
+          retries: 1,
+          updatedAt: nowIso(),
+          payload: {
+            raceId: race.id,
+            raceName: race.name,
+            winner: race.result.winner,
+            settledAt,
+            nextRaceTime,
+            leaderName,
+            leaderProfit,
+            message,
+          },
+        },
+        { merge: true },
+      )
+    await writeEvent(options?.isTest ? "telegram_failed_test_race_result" : "telegram_failed_race_result", {
+      notificationId,
+      raceId: race.id,
+      error: failureMessage,
+    })
+  }
+}
+
+async function sendTestRaceResultTelegram(input: TestRaceMessageInput): Promise<{
+  notificationId: string
+  raceId: string
+  raceName: string
+  status: NotificationLog["status"]
+  error?: string
+}> {
+  const races = await getRaces()
+  const requestedRaceId = input.raceId?.trim()
+  const selectedRace =
+    (requestedRaceId ? races.find((race) => race.id === requestedRaceId) : undefined) ??
+    races
+      .filter((race) => race.status === "settled")
+      .sort((a, b) => new Date(b.offTime).getTime() - new Date(a.offTime).getTime())[0] ??
+    races.sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0]
+
+  if (!selectedRace) {
+    throw new Error("No races available for test notification")
+  }
+
+  const now = nowIso()
+  const notificationRef = notificationsCol(db).doc()
+  await notificationRef.set({
+    id: notificationRef.id,
+    eventType: "race_result_settled",
+    payload: {
+      raceId: selectedRace.id,
+      raceName: selectedRace.name,
+      winner: selectedRace.result.winner,
+      settledAt: now,
+      test: true,
+    },
+    status: "pending",
+    retries: 0,
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  await dispatchRaceResultTelegramNotification(notificationRef.id, selectedRace, now, { isTest: true })
+
+  const finalSnapshot = await notificationRef.get()
+  const raw = (finalSnapshot.data() as Record<string, unknown> | undefined) ?? {}
+  const status = raw.status === "sent" || raw.status === "failed" ? raw.status : "pending"
+  const error = typeof raw.error === "string" ? raw.error : undefined
+
+  return {
+    notificationId: notificationRef.id,
+    raceId: selectedRace.id,
+    raceName: selectedRace.name,
+    status,
+    error,
+  }
+}
+
 function toStringHash(value: string): string {
   return String(Bun.hash(value))
+}
+
+function parseTrackerMode(raw: string | null | undefined): TrackerMode {
+  const normalized = (raw ?? "").trim().toLowerCase()
+  if (normalized === "simulated" || normalized === "simulation" || normalized === "sim") {
+    return "simulated"
+  }
+  return "live"
+}
+
+function seededRandomFactory(seedInput: string): () => number {
+  let state = Number(Bun.hash(seedInput)) >>> 0
+  if (state === 0) {
+    state = 0x6d2b79f5
+  }
+  return () => {
+    state += 0x6d2b79f5
+    let t = state
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
 }
 
 function deriveLockAt(legs: Array<Pick<BetLeg, "raceId">>, races: Race[]): string {
@@ -646,6 +918,79 @@ function computeGlobalStats(bets: Bet[], users: UserProfile[], atIso: string): G
   }
 }
 
+function weightedOrderFromRunners(
+  runnerNames: string[],
+  oddsByRunner: Map<string, number>,
+  nextRandom: () => number,
+): string[] {
+  const fallbackOdds = oddsByRunner.size > 0 ? Math.max(...oddsByRunner.values()) : 12
+  const weighted = runnerNames.map((runner) => {
+    const normalized = normalizeHorseName(runner)
+    const decimalOdds = oddsByRunner.get(normalized) ?? fallbackOdds
+    const safeOdds = Number.isFinite(decimalOdds) && decimalOdds >= 1 ? decimalOdds : fallbackOdds
+    const weight = 1 / Math.max(1.01, safeOdds)
+    const random = Math.max(1e-9, nextRandom())
+    const key = -Math.log(random) / Math.max(weight, 1e-9)
+
+    return { runner, key }
+  })
+
+  weighted.sort((a, b) => a.key - b.key)
+  return weighted.map((entry) => entry.runner)
+}
+
+function buildPreviewBetFromRaces(bet: Bet, racesById: Map<string, Race>, atIso: string): Bet {
+  if (bet.betType === "other") {
+    return {
+      ...bet,
+      status: bet.status === "settled" ? "settled" : getDerivedBetStatus({ ...bet, status: "open" }, atIso),
+    }
+  }
+
+  const simulatedLegs = bet.legs.map((leg) => {
+    const race = racesById.get(leg.raceId)
+    if (!race) {
+      return { ...leg, result: "pending" as const }
+    }
+
+    const lifecycle = deriveRaceLifecycle(race.offTime, race.result, atIso)
+    if (lifecycle !== "complete") {
+      return { ...leg, result: "pending" as const }
+    }
+
+    return {
+      ...leg,
+      result: deriveLegResult(leg.selectionName, race, leg.horseUid),
+    }
+  })
+
+  const workingBet: Bet = {
+    ...bet,
+    legs: simulatedLegs,
+    status: "open",
+    settledAt: undefined,
+    totalReturn: undefined,
+    profitLoss: undefined,
+    updatedAt: atIso,
+  }
+
+  if (isBetSettleable(workingBet)) {
+    const totalReturn = roundMoney(calculateBetReturn(workingBet))
+    return {
+      ...workingBet,
+      status: "settled",
+      settledAt: atIso,
+      totalReturn,
+      profitLoss: roundMoney(totalReturn - workingBet.stakeTotal),
+    }
+  }
+
+  return {
+    ...workingBet,
+    status: getDerivedBetStatus(workingBet, atIso),
+  }
+}
+
 function mapRaceDoc(raw: Record<string, unknown>, id: string): Race {
   const resultRaw = (raw.result as Record<string, unknown> | undefined) ?? {}
   const importMetaRaw = (raw.importMeta as Record<string, unknown> | undefined) ?? {}
@@ -726,7 +1071,7 @@ function mapRaceDoc(raw: Record<string, unknown>, id: string): Race {
     day: (raw.day as RaceDay) ?? "Tuesday",
     offTime,
     course: "Cheltenham",
-    name: String(raw.name ?? "Unnamed race"),
+    name: sanitizeRaceName(String(raw.name ?? "Unnamed race")) || "Unnamed race",
     externalRaceId:
       typeof raw.externalRaceId === "number"
         ? raw.externalRaceId
@@ -867,6 +1212,120 @@ async function getRaces(): Promise<Race[]> {
   return snapshot.docs
     .map((entry) => mapRaceDoc(entry.data() as Record<string, unknown>, entry.id))
     .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())
+}
+
+async function getSimulatedRaces(): Promise<Race[]> {
+  const snapshot = await simulatedRacesCol(db).get()
+  if (snapshot.empty) {
+    return []
+  }
+
+  return snapshot.docs
+    .map((entry) => mapRaceDoc(entry.data() as Record<string, unknown>, entry.id))
+    .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())
+}
+
+async function generateRaceSimulation(seedInput?: string): Promise<{
+  runId: string
+  seed: string
+  racesSimulated: number
+  generatedAt: string
+}> {
+  const sourceRaces = await getRaces()
+  if (sourceRaces.length === 0) {
+    throw new Error("No races available to simulate")
+  }
+
+  const generatedAt = nowIso()
+  const runId = `sim_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  const seed = (seedInput ?? runId).trim() || runId
+  const nextRandom = seededRandomFactory(seed)
+
+  const batch = db.batch()
+  let racesSimulated = 0
+
+  for (const race of sourceRaces) {
+    const activeRunners = (race.runnersDetailed ?? [])
+      .filter((runner) => !runner.nonRunner)
+      .map((runner) => runner.horseName)
+    const runnerNames = activeRunners.length > 0 ? activeRunners : race.runners
+    if (runnerNames.length === 0) {
+      continue
+    }
+
+    const oddsByRunner = new Map<string, number>()
+    race.oddsSnapshot?.forEach((entry) => {
+      if (Number.isFinite(entry.bestDecimal) && entry.bestDecimal >= 1) {
+        oddsByRunner.set(normalizeHorseName(entry.horseName), Number(entry.bestDecimal))
+      }
+    })
+
+    const placed = weightedOrderFromRunners(runnerNames, oddsByRunner, nextRandom)
+    const winner = placed[0]
+    if (!winner) {
+      continue
+    }
+
+    const simulatedRace: Race = {
+      ...race,
+      result: {
+        winner,
+        placed,
+        source: "manual",
+        sourceRef: `simulated:${runId}`,
+        updatedAt: generatedAt,
+      },
+      lifecycle: "complete",
+      status: "settled",
+    }
+
+    batch.set(simulatedRacesCol(db).doc(race.id), simulatedRace, { merge: true })
+    racesSimulated += 1
+  }
+
+  batch.set(
+    simulatedSeasonDoc(db),
+    {
+      season: `${CURRENT_SEASON}_sim`,
+      sourceSeason: CURRENT_SEASON,
+      generatedAt,
+      runId,
+      seed,
+      racesSimulated,
+      updatedAt: generatedAt,
+    },
+    { merge: true },
+  )
+
+  await batch.commit()
+  await writeEvent("simulation_generated", { runId, seed, racesSimulated })
+
+  return {
+    runId,
+    seed,
+    racesSimulated,
+    generatedAt,
+  }
+}
+
+async function getSimulationInfo(): Promise<{
+  generatedAt?: string
+  runId?: string
+  seed?: string
+  racesSimulated: number
+} | null> {
+  const snapshot = await simulatedSeasonDoc(db).get()
+  if (!snapshot.exists) {
+    return null
+  }
+
+  const raw = snapshot.data() as Record<string, unknown>
+  return {
+    generatedAt: typeof raw.generatedAt === "string" ? raw.generatedAt : undefined,
+    runId: typeof raw.runId === "string" ? raw.runId : undefined,
+    seed: typeof raw.seed === "string" ? raw.seed : undefined,
+    racesSimulated: Number(raw.racesSimulated ?? 0),
+  }
 }
 
 async function getUsers(): Promise<UserProfile[]> {
@@ -1244,7 +1703,7 @@ async function createRace(input: RaceDraftInput): Promise<void> {
     day: input.day,
     offTime: input.offTime,
     course: "Cheltenham",
-    name: input.name,
+    name: sanitizeRaceName(input.name) || "Unnamed race",
     source: "manual",
     importLock: {
       lockedByManualOverride: false,
@@ -1388,6 +1847,7 @@ async function settleRace(
       updatedAt: now,
     })
 
+    await dispatchRaceResultTelegramNotification(notificationRef.id, race, now)
     await writeEvent("race_settled", { raceId })
   }
 
@@ -2041,7 +2501,7 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
     if (cloudfrontChanged) {
       for (const sourceRace of racesInput) {
         const externalRaceId = Number(sourceRace.race_instance_uid)
-        const raceTitle = String(sourceRace.race_instance_title ?? "").trim()
+        const raceTitle = sanitizeRaceName(String(sourceRace.race_instance_title ?? ""))
         const offTimeRaw = String(sourceRace.race_datetime ?? "").trim()
         const offTime = offTimeRaw ? new Date(offTimeRaw).toISOString() : ""
 
@@ -2281,22 +2741,37 @@ async function setRaceImportLock(raceId: string, input: ImportLockInput): Promis
   })
 }
 
-async function loadState(): Promise<TrackerState> {
-  const [users, races, bets, userStats, globalStats] = await Promise.all([
-    getUsers(),
-    getRaces(),
-    getBets(),
-    getUserStats(),
-    getGlobalStats(),
-  ])
+async function loadState(mode: TrackerMode = "live"): Promise<TrackerState> {
+  const users = await getUsers()
+  const [liveRaces, simulatedRaces, bets] = await Promise.all([getRaces(), getSimulatedRaces(), getBets()])
+  const atIso = nowIso()
+
+  if (mode === "simulated") {
+    const races = simulatedRaces.length > 0 ? simulatedRaces : liveRaces
+    const racesById = new Map(races.map((race) => [race.id, race]))
+    const simulatedBets = bets.map((bet) => buildPreviewBetFromRaces(bet, racesById, atIso))
+    const userStats = users.map((user) => computeUserStats(user, simulatedBets))
+    const globalStats = computeGlobalStats(simulatedBets, users, atIso)
+
+    return {
+      users,
+      races,
+      bets: simulatedBets,
+      userStats,
+      globalStats,
+      version: atIso,
+    }
+  }
+
+  const [userStats, globalStats] = await Promise.all([getUserStats(), getGlobalStats()])
 
   return {
     users,
-    races,
+    races: liveRaces,
     bets,
     userStats,
     globalStats,
-    version: nowIso(),
+    version: atIso,
   }
 }
 
@@ -2314,7 +2789,14 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 function errorResponse(error: unknown, status = 400): Response {
-  const message = error instanceof Error ? error.message : "Unknown error"
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : typeof error === "object" && error !== null && "message" in error && typeof (error as { message?: unknown }).message === "string"
+          ? String((error as { message: string }).message)
+          : "Unknown error"
   return jsonResponse({ error: message }, status)
 }
 
@@ -2389,9 +2871,10 @@ export async function handleApiRequest(request: Request): Promise<Response> {
 
   const url = new URL(request.url)
   const pathname = url.pathname.replace(/\/+$/, "") || "/"
+  const trackerMode = parseTrackerMode(url.searchParams.get("mode"))
   const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   const startedAt = Date.now()
-  console.info(`[api] ${requestId} ${request.method} ${pathname} start`)
+  console.info(`[api] ${requestId} ${request.method} ${pathname} start (mode=${trackerMode})`)
 
   if (request.method === "OPTIONS") {
     const response = new Response(null, { headers: withCorsHeaders(new Headers()) })
@@ -2426,7 +2909,7 @@ export async function handleApiRequest(request: Request): Promise<Response> {
     }
 
     if (request.method === "GET" && pathname === "/api/state") {
-      return jsonResponse(await loadState())
+      return jsonResponse(await loadState(trackerMode))
     }
 
     if (request.method === "GET" && pathname === "/api/stream") {
@@ -2485,6 +2968,17 @@ export async function handleApiRequest(request: Request): Promise<Response> {
       }
       await refreshAndBroadcastIfChanged()
       return jsonResponse({ ok: true, run })
+    }
+
+    if (request.method === "POST" && pathname === "/api/simulate/races") {
+      const input = await request.json().catch(() => ({})) as { seed?: string }
+      const result = await generateRaceSimulation(input.seed)
+      return jsonResponse({ ok: true, ...result })
+    }
+
+    if (request.method === "GET" && pathname === "/api/simulate/info") {
+      const info = await getSimulationInfo()
+      return jsonResponse({ ok: true, info })
     }
 
     if (request.method === "POST" && pathname === "/api/bets") {
@@ -2573,6 +3067,12 @@ export async function handleApiRequest(request: Request): Promise<Response> {
       await queueDailySummary(input)
       await refreshAndBroadcastIfChanged()
       return jsonResponse({ ok: true })
+    }
+
+    if (request.method === "POST" && pathname === "/api/notifications/test-race-message") {
+      const input = (await request.json().catch(() => ({}))) as TestRaceMessageInput
+      const result = await sendTestRaceResultTelegram(input)
+      return jsonResponse({ ok: result.status === "sent", result }, result.status === "sent" ? 200 : 502)
     }
 
       const notFound = errorResponse("Not found", 404)

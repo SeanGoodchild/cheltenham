@@ -22,11 +22,16 @@ import { Label } from "@/components/ui/label"
 import { useTrackerData } from "@/hooks/useTrackerData"
 import {
   createBet,
+  generateRaceSimulation,
+  getRaceSimulationInfo,
+  getTrackerMode,
   getLastRaceImportRun,
   refreshRaceData,
   resolveOtherBetManually,
   removeBet,
+  setTrackerMode,
   settleRace,
+  type TrackerMode,
   updateBet,
   updateRaceResult,
 } from "@/lib/firebase"
@@ -69,8 +74,24 @@ function formatLastRefreshed(run: RaceImportRun | null): string {
   return `${formatIso(run.startedAt, "EEE d MMM HH:mm")} (${run.status})`
 }
 
+function formatCountdown(msUntil: number): string {
+  const totalSeconds = Math.max(0, Math.floor(msUntil / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`
+  }
+  return `${seconds}s`
+}
+
 export function App() {
-  const { users, races, bets, userStats, globalStats, error, bootstrapping } = useTrackerData()
+  const [trackerMode, setTrackerModeState] = useState<TrackerMode>(() => getTrackerMode())
+  const { users, races, bets, userStats, globalStats, error, bootstrapping } = useTrackerData(trackerMode)
   const [selectedUserId, setSelectedUserId] = useState<string>(() => {
     if (typeof window === "undefined") {
       return ""
@@ -85,6 +106,14 @@ export function App() {
   const [adminOpen, setAdminOpen] = useState(false)
   const [identityDraftUserId, setIdentityDraftUserId] = useState("")
   const [selectedSummaryUserId, setSelectedSummaryUserId] = useState("")
+  const [simulatingRaces, setSimulatingRaces] = useState(false)
+  const [nowTickMs, setNowTickMs] = useState(() => Date.now())
+  const [simulationInfo, setSimulationInfo] = useState<{
+    generatedAt?: string
+    runId?: string
+    seed?: string
+    racesSimulated: number
+  } | null>(null)
 
   const derivedUserStats = useMemo(() => {
     if (userStats.length > 0) {
@@ -103,7 +132,6 @@ export function App() {
   const hasValidSelectedUser = users.some((user) => user.id === selectedUserId)
   const resolvedSelectedUserId = hasValidSelectedUser ? selectedUserId : ""
   const identityGateOpen = !bootstrapping && users.length > 0 && !hasValidSelectedUser
-  const selectedUser = users.find((user) => user.id === resolvedSelectedUserId)
   const hasValidSummaryUser = users.some((user) => user.id === selectedSummaryUserId)
   const resolvedSummaryUserId =
     hasValidSummaryUser ? selectedSummaryUserId : resolvedSelectedUserId || users[0]?.id || ""
@@ -112,6 +140,18 @@ export function App() {
   const activeTabMeta = TABS.find((tab) => tab.id === activeTab) ?? TABS[0]
   const lastRefreshedLabel = formatLastRefreshed(raceImportRun)
   const effectiveSelectedUserId = resolvedSelectedUserId || identityDraftUserId || users[0]?.id || ""
+  const nextRaceCountdownLabel = useMemo(() => {
+    const nextRace = races
+      .filter((race) => new Date(race.offTime).getTime() > nowTickMs)
+      .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0]
+
+    if (!nextRace) {
+      return "No upcoming race"
+    }
+
+    const msUntil = new Date(nextRace.offTime).getTime() - nowTickMs
+    return `${formatIso(nextRace.offTime, "EEE HH:mm")} in ${formatCountdown(msUntil)}`
+  }, [nowTickMs, races])
 
   const persistUserId = (value: string) => {
     setSelectedUserId(value)
@@ -167,6 +207,36 @@ export function App() {
     }
   }
 
+  async function handleGenerateSimulation() {
+    setActionError(null)
+    setSimulatingRaces(true)
+    try {
+      const result = await generateRaceSimulation()
+      setSimulationInfo({
+        generatedAt: result.generatedAt,
+        runId: result.runId,
+        seed: result.seed,
+        racesSimulated: result.racesSimulated,
+      })
+      if (trackerMode !== "simulated") {
+        setTrackerMode("simulated")
+        setTrackerModeState("simulated")
+      } else {
+        setTrackerMode("simulated", { forceReconnect: true })
+      }
+    } catch (simulationError) {
+      setActionError(simulationError instanceof Error ? simulationError.message : "Failed to simulate races")
+    } finally {
+      setSimulatingRaces(false)
+    }
+  }
+
+  function handleToggleTrackerMode(nextMode: TrackerMode) {
+    setActionError(null)
+    setTrackerMode(nextMode)
+    setTrackerModeState(nextMode)
+  }
+
   function openAdminPanel() {
     setMobileMenuOpen(false)
     setAdminOpen(true)
@@ -176,8 +246,11 @@ export function App() {
     if (bootstrapping) {
       return
     }
-    void getLastRaceImportRun()
-      .then((run) => setRaceImportRun(run))
+    void Promise.all([getLastRaceImportRun(), getRaceSimulationInfo()])
+      .then(([run, info]) => {
+        setRaceImportRun(run)
+        setSimulationInfo(info)
+      })
       .catch(() => {
         // non-fatal for initial render
       })
@@ -205,6 +278,16 @@ export function App() {
     }
     setSelectedSummaryUserId(resolvedSelectedUserId || users[0].id)
   }, [resolvedSelectedUserId, selectedSummaryUserId, users])
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setNowTickMs(Date.now())
+    }, 1000)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [])
 
   if (bootstrapping) {
     return (
@@ -266,10 +349,15 @@ export function App() {
                 <div className="truncate text-sm font-semibold">Cheltenham Bet Tracker</div>
                 <div className="truncate text-xs text-muted-foreground">{activeTabMeta.label}</div>
               </div>
-              <Badge variant="secondary" className="max-w-[130px] truncate">
-                {selectedUser?.displayName ?? "No lad"}
+              <Badge variant="secondary" className="max-w-[170px] truncate text-[11px]">
+                {nextRaceCountdownLabel}
               </Badge>
             </div>
+            {trackerMode === "simulated" ? (
+              <div className="mt-2 text-center">
+                <Badge variant="outline">Simulated Results Mode</Badge>
+              </div>
+            ) : null}
           </header>
 
           <main className="flex-1 px-4 py-4 pb-24 md:px-6 md:py-6 md:pb-6">
@@ -279,8 +367,13 @@ export function App() {
                   <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Cheltenham Festival 2026</div>
                   <div className="text-lg font-semibold">{activeTabMeta.label}</div>
                 </div>
-                <Badge variant="secondary">{selectedUser?.displayName ?? "Pick your lad"}</Badge>
+                <Badge variant="secondary">{nextRaceCountdownLabel}</Badge>
               </div>
+              {trackerMode === "simulated" ? (
+                <div className="mt-2 flex justify-end">
+                  <Badge variant="outline">Simulated Results Mode</Badge>
+                </div>
+              ) : null}
 
               {(error || actionError) && (
                 <Card>
@@ -445,37 +538,79 @@ export function App() {
               </Button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 md:p-6">
-              <div className="mb-4 grid gap-3 rounded-xl border border-border/70 bg-card p-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-                <div className="space-y-1">
-                  <Label htmlFor="admin-user-switch" className="text-xs uppercase tracking-wide text-muted-foreground">
-                    Active Lad
-                  </Label>
-                  <select
-                    id="admin-user-switch"
-                    className="native-select"
-                    value={effectiveSelectedUserId}
-                    onChange={(event) => handleSwitchUser(event.target.value)}
+              <div className="mb-4 space-y-3 rounded-xl border border-border/70 bg-card p-3">
+                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                  <div className="space-y-1">
+                    <Label htmlFor="admin-user-switch" className="text-xs uppercase tracking-wide text-muted-foreground">
+                      Active Lad
+                    </Label>
+                    <select
+                      id="admin-user-switch"
+                      className="native-select"
+                      value={effectiveSelectedUserId}
+                      onChange={(event) => handleSwitchUser(event.target.value)}
+                    >
+                      {users.map((user) => (
+                        <option key={`admin-user-${user.id}`} value={user.id}>
+                          {user.displayName}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="text-xs text-muted-foreground">Last refreshed: {lastRefreshedLabel}</div>
+                  </div>
+                  <Button
+                    type="button"
+                    className="justify-start gap-2"
+                    variant="outline"
+                    onClick={() => {
+                      void handleRefreshRaceData()
+                    }}
+                    disabled={refreshingRaceData || trackerMode === "simulated"}
                   >
-                    {users.map((user) => (
-                      <option key={`admin-user-${user.id}`} value={user.id}>
-                        {user.displayName}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="text-xs text-muted-foreground">Last refreshed: {lastRefreshedLabel}</div>
+                    <RefreshCw className={cn("size-4", refreshingRaceData ? "animate-spin" : "")} />
+                    {refreshingRaceData ? "Refreshing..." : "Refresh race data"}
+                  </Button>
                 </div>
-                <Button
-                  type="button"
-                  className="justify-start gap-2"
-                  variant="outline"
-                  onClick={() => {
-                    void handleRefreshRaceData()
-                  }}
-                  disabled={refreshingRaceData}
-                >
-                  <RefreshCw className={cn("size-4", refreshingRaceData ? "animate-spin" : "")} />
-                  {refreshingRaceData ? "Refreshing..." : "Refresh race data"}
-                </Button>
+
+                <div className="grid gap-3 md:grid-cols-[auto_auto_minmax(0,1fr)] md:items-end">
+                  <div className="space-y-1">
+                    <div className="text-xs uppercase tracking-wide text-muted-foreground">Data Mode</div>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={trackerMode === "live" ? "default" : "outline"}
+                        onClick={() => handleToggleTrackerMode("live")}
+                      >
+                        Live
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={trackerMode === "simulated" ? "default" : "outline"}
+                        onClick={() => handleToggleTrackerMode("simulated")}
+                      >
+                        Simulated
+                      </Button>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      void handleGenerateSimulation()
+                    }}
+                    disabled={simulatingRaces}
+                  >
+                    {simulatingRaces ? "Simulating..." : "Simulate all races"}
+                  </Button>
+                  <div className="text-xs text-muted-foreground">
+                    {simulationInfo?.generatedAt
+                      ? `Simulation ready: ${formatIso(simulationInfo.generatedAt, "EEE d MMM HH:mm")} (${simulationInfo.racesSimulated} races)`
+                      : "No simulation generated yet."}
+                  </div>
+                </div>
               </div>
               <AdminPanel
                 races={races}

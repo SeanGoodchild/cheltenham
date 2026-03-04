@@ -121,8 +121,8 @@ export function PersonalPanel({
           </div>
         </div>
 
-        <div className="h-56 rounded-md border border-border p-2">
-          <ResponsiveContainer width="100%" height="100%">
+        <div className="h-56 min-w-0 rounded-md border border-border p-2">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={200}>
             <LineChart data={chartData}>
               <XAxis dataKey="label" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 11 }} />
