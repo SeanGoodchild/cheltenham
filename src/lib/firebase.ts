@@ -49,7 +49,33 @@ type TrackerState = {
   version: string
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001"
+function trimTrailingSlashes(value: string): string {
+  return value.replace(/\/+$/, "")
+}
+
+function resolveApiBaseUrl(): string {
+  const configured = String(import.meta.env.VITE_API_BASE_URL ?? "").trim()
+  if (configured) {
+    return trimTrailingSlashes(configured)
+  }
+
+  if (typeof window !== "undefined") {
+    const hostname = window.location.hostname
+    if (hostname === "localhost" || hostname === "127.0.0.1") {
+      return "http://localhost:3001"
+    }
+    // In production, default to same-origin /api routes.
+    return ""
+  }
+
+  return ""
+}
+
+const API_BASE_URL = resolveApiBaseUrl()
+
+function apiUrl(path: string): string {
+  return API_BASE_URL ? `${API_BASE_URL}${path}` : path
+}
 
 const stateCache: TrackerState = {
   users: [],
@@ -71,8 +97,9 @@ let streamInitPromise: Promise<void> | null = null
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
+  const targetUrl = apiUrl(path)
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
+    response = await fetch(targetUrl, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -81,13 +108,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : "Network request failed"
+    const runningLocally =
+      typeof window !== "undefined" &&
+      (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")
+    if (runningLocally) {
+      throw new Error(`API unavailable at ${targetUrl}. Start the backend with 'bun run dev:server'. (${message})`)
+    }
     throw new Error(
-      `API unavailable at ${API_BASE_URL}. Start the backend with 'bun run dev:server'. (${message})`,
+      `API unavailable at ${targetUrl}. Deploy the backend API and set VITE_API_BASE_URL in Vercel (or serve /api on this domain). (${message})`,
     )
   }
 
   if (!response.ok) {
     const payload = (await response.json().catch(() => ({}))) as { error?: string }
+    if (response.status === 404 && !API_BASE_URL) {
+      throw new Error(
+        "API route not found on this host. Deploy backend endpoints under /api or set VITE_API_BASE_URL to your backend URL.",
+      )
+    }
     throw new Error(payload.error ?? `Request failed: ${response.status}`)
   }
 
@@ -119,7 +157,7 @@ async function ensureStream(): Promise<void> {
     const initial = await request<TrackerState>("/api/state")
     publishState(initial)
 
-    stream = new EventSource(`${API_BASE_URL}/api/stream`)
+    stream = new EventSource(apiUrl("/api/stream"))
     stream.addEventListener("state", (event) => {
       const parsed = JSON.parse((event as MessageEvent).data) as TrackerState
       publishState(parsed)

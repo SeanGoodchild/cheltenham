@@ -89,3 +89,9 @@ bun run dev:full
 ## Notes
 - Access/auth is still intentionally lightweight for your private group.
 - Automation workers (scheduled polling/scraper/API) remain Phase 2.
+
+## Deploying Frontend (Vercel)
+- `https://cheltenham.vercel.app` only hosts the frontend unless you also deploy backend API routes.
+- In production, the client now defaults to same-origin `/api/*`.
+- If your backend is on another host (recommended for current Bun server), set `VITE_API_BASE_URL` in Vercel to that backend origin (example: `https://cheltenham-api.example.com`).
+- Also set backend `APP_ORIGIN=https://cheltenham.vercel.app` so CORS allows the frontend origin.
