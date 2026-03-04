@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label"
 import { formatCurrency, formatOdds } from "@/lib/format"
 import { normalizeHorseName } from "@/lib/horse"
 import { formatIso } from "@/lib/time"
-import type { Bet, BetType, Race, RaceDay, UserProfile } from "@/lib/types"
+import type { Bet, BetType, Race, RaceDay } from "@/lib/types"
 
 export type BetDraftForm = {
   userId: string
@@ -27,11 +27,9 @@ export type BetDraftForm = {
 }
 
 type BetPanelProps = {
-  users: UserProfile[]
   races: Race[]
   bets: Bet[]
   selectedUserId: string
-  onSelectUserId: (value: string) => void
   onCreateBet: (draft: BetDraftForm) => Promise<void>
   onUpdateBet: (betId: string, draft: BetDraftForm, currentBet: Bet) => Promise<void>
   onDeleteBet: (bet: Bet) => Promise<void>
@@ -88,11 +86,9 @@ function lifecycleLabel(value: Race["lifecycle"]): string {
 }
 
 export function BetPanel({
-  users,
   races,
   bets,
   selectedUserId,
-  onSelectUserId,
   onCreateBet,
   onUpdateBet,
   onDeleteBet,
@@ -112,7 +108,15 @@ export function BetPanel({
   const resetDraft = (userId: string) => {
     setDraft(newDraft(userId))
     setEditingBetId(null)
+    setQuickRacePicks({})
   }
+
+  useEffect(() => {
+    setDraft(newDraft(selectedUserId))
+    setEditingBetId(null)
+    setQuickRacePicks({})
+    setActionError(null)
+  }, [selectedUserId])
 
   const hydrateFromBet = (bet: Bet) => {
     setEditingBetId(bet.id)
@@ -231,40 +235,19 @@ export function BetPanel({
       </CardHeader>
       <CardContent className="space-y-5">
         <form className="space-y-4" onSubmit={handleSubmit}>
-          <div className="grid gap-3 md:grid-cols-2">
-            <div className="space-y-1">
-              <Label htmlFor="identity">Who Are Ya?</Label>
-              <select
-                id="identity"
-                value={selectedUserId}
-                className="native-select"
-                onChange={(event) => {
-                  onSelectUserId(event.target.value)
-                  setDraft((prev) => ({ ...prev, userId: event.target.value }))
-                }}
-              >
-                {users.map((user) => (
-                  <option key={user.id} value={user.id}>
-                    {user.displayName}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="space-y-1">
-              <Label htmlFor="bet-type">Bet Type</Label>
-              <select
-                id="bet-type"
-                value={draft.betType}
-                className="native-select"
-                onChange={(event) => handleBetTypeChange(event.target.value as BetType)}
-              >
-                <option value="single">Single</option>
-                <option value="each_way">Each-way</option>
-                <option value="accumulator">Accumulator</option>
-                <option value="other">Other</option>
-              </select>
-            </div>
+          <div className="space-y-1">
+            <Label htmlFor="bet-type">Bet Type</Label>
+            <select
+              id="bet-type"
+              value={draft.betType}
+              className="native-select"
+              onChange={(event) => handleBetTypeChange(event.target.value as BetType)}
+            >
+              <option value="single">Single</option>
+              <option value="each_way">Each-way</option>
+              <option value="accumulator">Accumulator</option>
+              <option value="other">Other</option>
+            </select>
           </div>
 
           <div className="space-y-2">
@@ -535,7 +518,7 @@ export function BetPanel({
           </div>
         </form>
 
-          <div className="space-y-2">
+        <div className="space-y-2">
           <div className="text-sm font-medium">Recent Bets</div>
           {currentOpenBets.length === 0 ? (
             <div className="text-sm text-muted-foreground">No bets yet.</div>

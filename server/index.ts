@@ -2192,7 +2192,7 @@ export async function handleApiRequest(request: Request): Promise<Response> {
   await ensureBootstrapped()
 
   const url = new URL(request.url)
-  const { pathname } = url
+  const pathname = url.pathname.replace(/\/+$/, "") || "/"
   const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   const startedAt = Date.now()
   console.info(`[api] ${requestId} ${request.method} ${pathname} start`)

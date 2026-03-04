@@ -79,9 +79,13 @@ function toFetchRequest(
     "localhost"
   const rawUrl = req.url ?? "/api/health"
   const url = new URL(rawUrl, `${proto}://${host}`)
-  const rewrittenPath = url.searchParams.get("path")
-  if (rewrittenPath) {
-    url.pathname = `/api/${rewrittenPath}`.replace(/\/+/g, "/")
+  const rewrittenPathParts = url.searchParams
+    .getAll("path")
+    .flatMap((value) => value.split("/"))
+    .map((value) => value.trim())
+    .filter(Boolean)
+  if (rewrittenPathParts.length > 0) {
+    url.pathname = `/api/${rewrittenPathParts.join("/")}`.replace(/\/+/g, "/")
     url.searchParams.delete("path")
   }
 

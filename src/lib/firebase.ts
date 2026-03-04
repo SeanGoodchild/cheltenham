@@ -121,7 +121,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const payload = (await response.json().catch(() => ({}))) as { error?: string }
-    if (response.status === 404 && !API_BASE_URL) {
+    const isCoreRoute = path === "/api/state" || path === "/api/health" || path === "/api/stream"
+    if (response.status === 404 && !API_BASE_URL && isCoreRoute) {
       throw new Error(
         "API route not found on this host. Deploy backend endpoints under /api or set VITE_API_BASE_URL to your backend URL.",
       )
