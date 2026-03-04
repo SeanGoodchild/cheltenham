@@ -1,6 +1,6 @@
 import { Readable } from "node:stream"
 
-import { handleApiRequest } from "../server/index"
+import { handleApiRequest } from "../server/index.js"
 
 function normalizeHeaderValue(value: string | string[] | undefined): string | null {
   if (Array.isArray(value)) {

@@ -1,3 +1,3 @@
-import handler from "./handler"
+import handler from "./handler.js"
 
 export default handler
