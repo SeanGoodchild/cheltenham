@@ -2124,6 +2124,9 @@ let currentState: TrackerState | null = null
 let currentDigest = ""
 const sseClients = new Set<ReadableStreamDefaultController<Uint8Array>>()
 const encoder = new TextEncoder()
+let stateRefreshTickerStarted = false
+let bootstrapped = false
+let bootstrapPromise: Promise<void> | null = null
 
 function digestState(state: TrackerState): string {
   return JSON.stringify(state)
@@ -2150,176 +2153,238 @@ async function refreshAndBroadcastIfChanged() {
   }
 }
 
-setInterval(() => {
-  refreshAndBroadcastIfChanged().catch((error) => {
-    console.error("state refresh failed", error)
-  })
-}, 3000)
+function ensureStateRefreshTicker() {
+  if (stateRefreshTickerStarted) {
+    return
+  }
+  stateRefreshTickerStarted = true
+  setInterval(() => {
+    refreshAndBroadcastIfChanged().catch((error) => {
+      console.error("state refresh failed", error)
+    })
+  }, 3000)
+}
 
-await bootstrapSeason()
-await recomputeAndPersistStats()
-currentState = await loadState()
-currentDigest = digestState(currentState)
+async function ensureBootstrapped() {
+  if (bootstrapped) {
+    return
+  }
+  if (!bootstrapPromise) {
+    bootstrapPromise = (async () => {
+      await bootstrapSeason()
+      await recomputeAndPersistStats()
+      currentState = await loadState()
+      currentDigest = digestState(currentState)
+      ensureStateRefreshTicker()
+      bootstrapped = true
+    })()
+  }
+  await bootstrapPromise
+}
 
-Bun.serve({
-  port: PORT,
-  async fetch(request) {
-    const url = new URL(request.url)
-    const { pathname } = url
+export async function handleApiRequest(request: Request): Promise<Response> {
+  await ensureBootstrapped()
 
-    if (request.method === "OPTIONS") {
-      return new Response(null, { headers: withCorsHeaders(new Headers()) })
+  const url = new URL(request.url)
+  const { pathname } = url
+  const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  const startedAt = Date.now()
+  console.info(`[api] ${requestId} ${request.method} ${pathname} start`)
+
+  if (request.method === "OPTIONS") {
+    const response = new Response(null, { headers: withCorsHeaders(new Headers()) })
+    response.headers.set("x-request-id", requestId)
+    console.info(`[api] ${requestId} ${request.method} ${pathname} -> ${response.status} (${Date.now() - startedAt}ms)`)
+    return response
+  }
+
+  try {
+    if (request.method === "GET" && pathname === "/api/health") {
+      const diagnostics = {
+        runtime: typeof Bun !== "undefined" ? "bun" : "node",
+        nodeVersion: typeof process !== "undefined" ? process.version : undefined,
+        vercel: Boolean(process.env.VERCEL),
+        requestId,
+        appOrigin: APP_ORIGIN,
+        season: CURRENT_SEASON,
+        bootstrapped,
+        sseClients: sseClients.size,
+        firebase: {
+          projectId:
+            process.env.FIREBASE_PROJECT_ID ?? process.env.VITE_FIREBASE_PROJECT_ID ?? "rocketmill-octane",
+          hasServiceAccountJson: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON),
+          hasGoogleApplicationCredentials: Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS),
+        },
+      }
+      console.info(`[api] ${requestId} health diagnostics`, diagnostics)
+      const response = jsonResponse({ status: "ok", season: CURRENT_SEASON, diagnostics })
+      response.headers.set("x-request-id", requestId)
+      console.info(`[api] ${requestId} ${request.method} ${pathname} -> ${response.status} (${Date.now() - startedAt}ms)`)
+      return response
     }
 
-    try {
-      if (request.method === "GET" && pathname === "/api/health") {
-        return jsonResponse({ status: "ok", season: CURRENT_SEASON })
+    if (request.method === "GET" && pathname === "/api/state") {
+      return jsonResponse(await loadState())
+    }
+
+    if (request.method === "GET" && pathname === "/api/stream") {
+      let streamController: ReadableStreamDefaultController<Uint8Array> | null = null
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller
+          sseClients.add(controller)
+          controller.enqueue(encoder.encode(`event: connected\ndata: {"ok":true}\n\n`))
+          if (currentState) {
+            controller.enqueue(encoder.encode(`event: state\ndata: ${JSON.stringify(currentState)}\n\n`))
+          }
+        },
+        cancel() {
+          if (streamController) {
+            sseClients.delete(streamController)
+            streamController = null
+          }
+        },
+      })
+
+      return new Response(stream, {
+        headers: withCorsHeaders(
+          new Headers({
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+          }),
+        ),
+      })
+    }
+
+    if (request.method === "POST" && pathname === "/api/bootstrap") {
+      await bootstrapSeason()
+      await recomputeAndPersistStats()
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
+
+    if (request.method === "POST" && pathname === "/api/stats/recompute") {
+      await recomputeAndPersistStats()
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
+
+    if (request.method === "GET" && pathname === "/api/import/races/last-run") {
+      const run = await getLastRaceImportRun()
+      return jsonResponse({ run })
+    }
+
+    if (request.method === "POST" && pathname === "/api/import/races/refresh") {
+      const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+      const run = await runRaceImport(runId)
+      if (run.status === "busy") {
+        return jsonResponse({ ok: false, run, error: "Race import already in progress" }, 409)
       }
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true, run })
+    }
 
-      if (request.method === "GET" && pathname === "/api/state") {
-        return jsonResponse(await loadState())
+    if (request.method === "POST" && pathname === "/api/bets") {
+      const input = await parseJson<BetDraftInput>(request)
+      await createBet(input)
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
+
+    if (request.method === "PUT" && pathname.startsWith("/api/bets/")) {
+      const betId = pathname.split("/").at(-1)
+      if (!betId) {
+        return errorResponse("Missing bet id", 400)
       }
+      const input = await parseJson<BetDraftInput>(request)
+      await updateBet(betId, input)
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
 
-      if (request.method === "GET" && pathname === "/api/stream") {
-        let streamController: ReadableStreamDefaultController<Uint8Array> | null = null
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            streamController = controller
-            sseClients.add(controller)
-            controller.enqueue(encoder.encode(`event: connected\ndata: {"ok":true}\n\n`))
-            if (currentState) {
-              controller.enqueue(encoder.encode(`event: state\ndata: ${JSON.stringify(currentState)}\n\n`))
-            }
-          },
-          cancel() {
-            if (streamController) {
-              sseClients.delete(streamController)
-              streamController = null
-            }
-          },
-        })
-
-        return new Response(stream, {
-          headers: withCorsHeaders(
-            new Headers({
-              "Content-Type": "text/event-stream",
-              "Cache-Control": "no-cache",
-              Connection: "keep-alive",
-            }),
-          ),
-        })
+    if (request.method === "DELETE" && pathname.startsWith("/api/bets/")) {
+      const betId = pathname.split("/").at(-1)
+      if (!betId) {
+        return errorResponse("Missing bet id", 400)
       }
+      await removeBet(betId)
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
 
-      if (request.method === "POST" && pathname === "/api/bootstrap") {
-        await bootstrapSeason()
-        await recomputeAndPersistStats()
-        await refreshAndBroadcastIfChanged()
-        return jsonResponse({ ok: true })
+    if (request.method === "POST" && pathname === "/api/races") {
+      const input = await parseJson<RaceDraftInput>(request)
+      await createRace(input)
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
+
+    if (request.method === "POST" && pathname.startsWith("/api/races/") && pathname.endsWith("/result")) {
+      const raceId = pathname.split("/")[3]
+      if (!raceId) {
+        return errorResponse("Missing race id", 400)
       }
+      const input = await parseJson<Omit<RaceResultInput, "raceId">>(request)
+      await updateRaceResult({ raceId, winner: input.winner, placed: input.placed ?? [] })
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
 
-      if (request.method === "POST" && pathname === "/api/stats/recompute") {
-        await recomputeAndPersistStats()
-        await refreshAndBroadcastIfChanged()
-        return jsonResponse({ ok: true })
+    if (request.method === "POST" && pathname.startsWith("/api/races/") && pathname.endsWith("/settle")) {
+      const raceId = pathname.split("/")[3]
+      if (!raceId) {
+        return errorResponse("Missing race id", 400)
       }
+      await settleRace(raceId)
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
 
-      if (request.method === "GET" && pathname === "/api/import/races/last-run") {
-        const run = await getLastRaceImportRun()
-        return jsonResponse({ run })
+    if (request.method === "POST" && pathname.startsWith("/api/races/") && pathname.endsWith("/import-lock")) {
+      const raceId = pathname.split("/")[3]
+      if (!raceId) {
+        return errorResponse("Missing race id", 400)
       }
-
-      if (request.method === "POST" && pathname === "/api/import/races/refresh") {
-        const runId = `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-        const run = await runRaceImport(runId)
-        if (run.status === "busy") {
-          return jsonResponse({ ok: false, run, error: "Race import already in progress" }, 409)
-        }
-        await refreshAndBroadcastIfChanged()
-        return jsonResponse({ ok: true, run })
+      const input = await parseJson<ImportLockInput>(request)
+      if (typeof input.locked !== "boolean") {
+        return errorResponse("Missing lock toggle flag", 400)
       }
+      await setRaceImportLock(raceId, input)
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
 
-      if (request.method === "POST" && pathname === "/api/bets") {
-        const input = await parseJson<BetDraftInput>(request)
-        await createBet(input)
-        await refreshAndBroadcastIfChanged()
-        return jsonResponse({ ok: true })
-      }
+    if (request.method === "POST" && pathname === "/api/notifications/daily-summary") {
+      const input = await parseJson<GlobalStats>(request)
+      await queueDailySummary(input)
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
 
-      if (request.method === "PUT" && pathname.startsWith("/api/bets/")) {
-        const betId = pathname.split("/").at(-1)
-        if (!betId) {
-          return errorResponse("Missing bet id", 400)
-        }
-        const input = await parseJson<BetDraftInput>(request)
-        await updateBet(betId, input)
-        await refreshAndBroadcastIfChanged()
-        return jsonResponse({ ok: true })
-      }
-
-      if (request.method === "DELETE" && pathname.startsWith("/api/bets/")) {
-        const betId = pathname.split("/").at(-1)
-        if (!betId) {
-          return errorResponse("Missing bet id", 400)
-        }
-        await removeBet(betId)
-        await refreshAndBroadcastIfChanged()
-        return jsonResponse({ ok: true })
-      }
-
-      if (request.method === "POST" && pathname === "/api/races") {
-        const input = await parseJson<RaceDraftInput>(request)
-        await createRace(input)
-        await refreshAndBroadcastIfChanged()
-        return jsonResponse({ ok: true })
-      }
-
-      if (request.method === "POST" && pathname.startsWith("/api/races/") && pathname.endsWith("/result")) {
-        const raceId = pathname.split("/")[3]
-        if (!raceId) {
-          return errorResponse("Missing race id", 400)
-        }
-        const input = await parseJson<Omit<RaceResultInput, "raceId">>(request)
-        await updateRaceResult({ raceId, winner: input.winner, placed: input.placed ?? [] })
-        await refreshAndBroadcastIfChanged()
-        return jsonResponse({ ok: true })
-      }
-
-      if (request.method === "POST" && pathname.startsWith("/api/races/") && pathname.endsWith("/settle")) {
-        const raceId = pathname.split("/")[3]
-        if (!raceId) {
-          return errorResponse("Missing race id", 400)
-        }
-        await settleRace(raceId)
-        await refreshAndBroadcastIfChanged()
-        return jsonResponse({ ok: true })
-      }
-
-      if (request.method === "POST" && pathname.startsWith("/api/races/") && pathname.endsWith("/import-lock")) {
-        const raceId = pathname.split("/")[3]
-        if (!raceId) {
-          return errorResponse("Missing race id", 400)
-        }
-        const input = await parseJson<ImportLockInput>(request)
-        if (typeof input.locked !== "boolean") {
-          return errorResponse("Missing lock toggle flag", 400)
-        }
-        await setRaceImportLock(raceId, input)
-        await refreshAndBroadcastIfChanged()
-        return jsonResponse({ ok: true })
-      }
-
-      if (request.method === "POST" && pathname === "/api/notifications/daily-summary") {
-        const input = await parseJson<GlobalStats>(request)
-        await queueDailySummary(input)
-        await refreshAndBroadcastIfChanged()
-        return jsonResponse({ ok: true })
-      }
-
-      return errorResponse("Not found", 404)
+      const notFound = errorResponse("Not found", 404)
+      notFound.headers.set("x-request-id", requestId)
+      console.warn(`[api] ${requestId} ${request.method} ${pathname} -> 404 (${Date.now() - startedAt}ms)`)
+      return notFound
     } catch (error) {
-      return errorResponse(error)
+      console.error(`[api] ${requestId} ${request.method} ${pathname} error`, error)
+      const failed = errorResponse(error)
+      failed.headers.set("x-request-id", requestId)
+      console.info(`[api] ${requestId} ${request.method} ${pathname} -> ${failed.status} (${Date.now() - startedAt}ms)`)
+      return failed
     }
-  },
-})
+}
 
-console.log(`Cheltenham API server listening on http://localhost:${PORT}`)
+if (typeof Bun !== "undefined" && !process.env.VERCEL) {
+  ensureBootstrapped()
+    .then(() => {
+      Bun.serve({
+        port: PORT,
+        fetch: handleApiRequest,
+      })
+      console.log(`Cheltenham API server listening on http://localhost:${PORT}`)
+    })
+    .catch((error) => {
+      console.error("Failed to start Cheltenham API server", error)
+    })
+}

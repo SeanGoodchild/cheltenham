@@ -90,8 +90,18 @@ bun run dev:full
 - Access/auth is still intentionally lightweight for your private group.
 - Automation workers (scheduled polling/scraper/API) remain Phase 2.
 
-## Deploying Frontend (Vercel)
-- `https://cheltenham.vercel.app` only hosts the frontend unless you also deploy backend API routes.
-- In production, the client now defaults to same-origin `/api/*`.
-- If your backend is on another host (recommended for current Bun server), set `VITE_API_BASE_URL` in Vercel to that backend origin (example: `https://cheltenham-api.example.com`).
-- Also set backend `APP_ORIGIN=https://cheltenham.vercel.app` so CORS allows the frontend origin.
+## Deploying On Vercel (Single Host)
+- This repo includes a Vercel catch-all Function route at [`api/[...path].ts`](api/[...path].ts), so `/api/*` is handled on the same host.
+- For a frontend domain like `https://cash-lads.vercel.app`, leave `VITE_API_BASE_URL` unset (or set it to `""`) so the client uses same-origin `/api`.
+- Exact Vercel env vars required:
+  - `APP_ORIGIN=https://cash-lads.vercel.app`
+  - `FIREBASE_PROJECT_ID=rocketmill-octane`
+  - `FIREBASE_SERVICE_ACCOUNT_JSON=<single-line service account JSON>`
+- Optional env vars:
+  - `CHELTHENHAM_RACE_SOURCE_URL`
+  - `IRISHRACING_BASE_URL`
+  - `ODDS_IMPORT_TIMEOUT_MS`
+  - `ODDS_IMPORT_CONCURRENCY`
+  - `ODDS_IMPORT_USER_AGENT`
+- If `VITE_API_BASE_URL` is currently set to `http://localhost:3001` in Vercel, remove it.
+- Note: `/api/stream` (SSE) works via function streaming but Vercel function duration limits can cause periodic reconnects.
