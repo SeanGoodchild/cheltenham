@@ -1,0 +1,134 @@
+@config "../tailwind.config.js";
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+@layer base {
+  :root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.13 0.028 261.692);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.13 0.028 261.692);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.13 0.028 261.692);
+    --primary: oklch(0.60 0.13 163);
+    --primary-foreground: oklch(0.98 0.02 166);
+    --secondary: oklch(0.967 0.001 286.375);
+    --secondary-foreground: oklch(0.21 0.006 285.885);
+    --muted: oklch(0.967 0.003 264.542);
+    --muted-foreground: oklch(0.551 0.027 264.364);
+    --accent: oklch(0.967 0.003 264.542);
+    --accent-foreground: oklch(0.21 0.034 264.665);
+    --destructive: oklch(0.577 0.245 27.325);
+    --border: oklch(0.928 0.006 264.531);
+    --input: oklch(0.928 0.006 264.531);
+    --ring: oklch(0.707 0.022 261.325);
+    --chart-1: oklch(0.85 0.13 165);
+    --chart-2: oklch(0.77 0.15 163);
+    --chart-3: oklch(0.70 0.15 162);
+    --chart-4: oklch(0.60 0.13 163);
+    --chart-5: oklch(0.51 0.10 166);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.985 0.002 247.839);
+    --sidebar-foreground: oklch(0.13 0.028 261.692);
+    --sidebar-primary: oklch(0.60 0.13 163);
+    --sidebar-primary-foreground: oklch(0.98 0.02 166);
+    --sidebar-accent: oklch(0.967 0.003 264.542);
+    --sidebar-accent-foreground: oklch(0.21 0.034 264.665);
+    --sidebar-border: oklch(0.928 0.006 264.531);
+    --sidebar-ring: oklch(0.707 0.022 261.325);
+  }
+  .dark {
+    --background: oklch(0.13 0.028 261.692);
+    --foreground: oklch(0.985 0.002 247.839);
+    --card: oklch(0.21 0.034 264.665);
+    --card-foreground: oklch(0.985 0.002 247.839);
+    --popover: oklch(0.21 0.034 264.665);
+    --popover-foreground: oklch(0.985 0.002 247.839);
+    --primary: oklch(0.70 0.15 162);
+    --primary-foreground: oklch(0.26 0.05 173);
+    --secondary: oklch(0.274 0.006 286.033);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.278 0.033 256.848);
+    --muted-foreground: oklch(0.707 0.022 261.325);
+    --accent: oklch(0.278 0.033 256.848);
+    --accent-foreground: oklch(0.985 0.002 247.839);
+    --destructive: oklch(0.704 0.191 22.216);
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.551 0.027 264.364);
+    --chart-1: oklch(0.85 0.13 165);
+    --chart-2: oklch(0.77 0.15 163);
+    --chart-3: oklch(0.70 0.15 162);
+    --chart-4: oklch(0.60 0.13 163);
+    --chart-5: oklch(0.51 0.10 166);
+    --sidebar: oklch(0.21 0.034 264.665);
+    --sidebar-foreground: oklch(0.985 0.002 247.839);
+    --sidebar-primary: oklch(0.77 0.15 163);
+    --sidebar-primary-foreground: oklch(0.26 0.05 173);
+    --sidebar-accent: oklch(0.278 0.033 256.848);
+    --sidebar-accent-foreground: oklch(0.985 0.002 247.839);
+    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-ring: oklch(0.551 0.027 264.364);
+  }
+  .theme {
+    --font-sans: 'Inter Variable', sans-serif;
+  }
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply font-sans bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+@layer components {
+  .native-select {
+    @apply h-9 w-full rounded-md border border-input bg-background px-2.5 py-2 text-sm text-foreground shadow-sm outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .panel-subtle {
+    @apply rounded-lg border border-border/80 bg-muted/30 p-3;
+  }
+
+  .data-table-shell {
+    @apply overflow-x-auto rounded-lg border border-border/80 bg-background;
+  }
+
+  .data-table {
+    @apply w-full text-sm;
+  }
+
+  .data-table thead {
+    @apply bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground;
+  }
+
+  .data-table th {
+    @apply px-3 py-2 font-medium;
+  }
+
+  .data-table td {
+    @apply px-3 py-2;
+  }
+
+  .data-table tbody tr {
+    @apply border-t border-border/60;
+  }
+
+  .data-table tbody tr:nth-child(even) {
+    @apply bg-muted/20;
+  }
+}
