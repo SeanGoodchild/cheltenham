@@ -121,6 +121,7 @@ export function BetPanel({
   const [editingBetId, setEditingBetId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [stakeInput, setStakeInput] = useState("2")
   const [quickRacePicks, setQuickRacePicks] = useState<Record<number, { day?: RaceDay; time?: string }>>({})
   const [accaOddsManuallySet, setAccaOddsManuallySet] = useState(false)
 
@@ -130,14 +131,18 @@ export function BetPanel({
   )
 
   const resetDraft = (userId: string) => {
-    setDraft(newDraft(userId))
+    const nextDraft = newDraft(userId)
+    setDraft(nextDraft)
+    setStakeInput(String(nextDraft.stakeTotal))
     setEditingBetId(null)
     setQuickRacePicks({})
     setAccaOddsManuallySet(false)
   }
 
   useEffect(() => {
-    setDraft(newDraft(selectedUserId))
+    const nextDraft = newDraft(selectedUserId)
+    setDraft(nextDraft)
+    setStakeInput(String(nextDraft.stakeTotal))
     setEditingBetId(null)
     setQuickRacePicks({})
     setActionError(null)
@@ -173,6 +178,7 @@ export function BetPanel({
               horseUid: leg.horseUid,
             })),
     })
+    setStakeInput(String(bet.stakeTotal))
     setAccaOddsManuallySet(
       bet.betType === "accumulator" &&
         isValidOdds(resolvedOdds) &&
@@ -205,6 +211,11 @@ export function BetPanel({
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setActionError(null)
+    const parsedStakeTotal = Number(stakeInput)
+    if (!Number.isFinite(parsedStakeTotal) || parsedStakeTotal <= 0) {
+      setActionError("Stake must be greater than zero.")
+      return
+    }
     if (hasMissingOtherName) {
       setActionError("Add a name for this other bet before submitting.")
       return
@@ -223,6 +234,7 @@ export function BetPanel({
       const trimmedBetName = draft.betName?.trim()
       const payload: BetDraftForm = {
         ...draft,
+        stakeTotal: parsedStakeTotal,
         betName: draft.betType === "other" ? trimmedBetName : undefined,
         oddsUsed:
           draft.betType === "other"
@@ -564,13 +576,18 @@ export function BetPanel({
                 type="number"
                 min={0.1}
                 step={0.1}
-                value={draft.stakeTotal}
-                onChange={(event) =>
-                  setDraft((prev) => ({
-                    ...prev,
-                    stakeTotal: Number(event.target.value),
-                  }))
-                }
+                value={stakeInput}
+                onChange={(event) => {
+                  const rawValue = event.target.value
+                  setStakeInput(rawValue)
+                  const parsed = Number(rawValue)
+                  if (rawValue !== "" && Number.isFinite(parsed)) {
+                    setDraft((prev) => ({
+                      ...prev,
+                      stakeTotal: parsed,
+                    }))
+                  }
+                }}
               />
             </div>
 

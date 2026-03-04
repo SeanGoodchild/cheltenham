@@ -933,6 +933,16 @@ async function recomputeAndPersistStats(): Promise<void> {
 function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: string): Bet {
   const now = nowIso()
   const normalizedBetName = input.betName?.trim()
+  const rawBetType = typeof input.betType === "string" ? input.betType.toLowerCase() : ""
+  const normalizedBetType: BetType =
+    rawBetType === "single" ||
+    rawBetType === "each_way" ||
+    rawBetType === "accumulator" ||
+    rawBetType === "other"
+      ? (rawBetType as BetType)
+      : "single"
+  const inputLegs = Array.isArray(input.legs) ? input.legs : []
+  const isOtherBet = normalizedBetType === "other" || (!rawBetType && Boolean(normalizedBetName) && inputLegs.length === 0)
   if (!input.userId) {
     throw new Error("Pick a user")
   }
@@ -940,7 +950,7 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
     throw new Error("Stake must be greater than zero")
   }
 
-  if (input.betType === "other") {
+  if (isOtherBet) {
     if (!normalizedBetName) {
       throw new Error("Other bets need a name")
     }
@@ -973,18 +983,18 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
     }
   }
 
-  if (!input.legs.length) {
+  if (!inputLegs.length) {
     throw new Error("Add at least one bet leg")
   }
-  if (input.betType !== "accumulator" && input.legs.length !== 1) {
+  if (normalizedBetType !== "accumulator" && inputLegs.length !== 1) {
     throw new Error("Single and each-way bets must have exactly one leg")
   }
-  if (input.betType === "each_way" && !input.ewTerms) {
+  if (normalizedBetType === "each_way" && !input.ewTerms) {
     throw new Error("Each-way terms are required")
   }
 
   const legLifecycles: Array<Race["lifecycle"]> = []
-  const formattedLegs = input.legs.map((leg) => {
+  const formattedLegs = inputLegs.map((leg) => {
     const race = races.find((entry) => entry.id === leg.raceId)
     if (!race) {
       throw new Error("One or more legs reference missing races")
@@ -994,7 +1004,7 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
     }
     const parsedLegOdds = Number(leg.decimalOdds)
     const hasLegOdds = isValidOdds(parsedLegOdds)
-    if (input.betType !== "accumulator" && !hasLegOdds) {
+    if (normalizedBetType !== "accumulator" && !hasLegOdds) {
       throw new Error("Decimal odds are required for every leg and must be >= 1.0")
     }
     const decimalOdds = hasLegOdds ? parsedLegOdds : 1
@@ -1015,7 +1025,7 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
   })
 
   const autoOddsUsed =
-    input.betType === "accumulator"
+    normalizedBetType === "accumulator"
       ? roundTo(
           formattedLegs.reduce((acc, leg) => {
             const odds = isValidOdds(leg.decimalOdds) ? leg.decimalOdds : 1
@@ -1044,13 +1054,13 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
     id: existingId ?? "",
     season: CURRENT_SEASON,
     userId: input.userId,
-    betType: input.betType,
+    betType: normalizedBetType,
     betName: undefined,
     oddsUsed,
     legs: formattedLegs,
     legRaceIds: [...new Set(formattedLegs.map((leg) => leg.raceId))],
     stakeTotal: Number(input.stakeTotal),
-    ewTerms: input.betType === "each_way" ? input.ewTerms : undefined,
+    ewTerms: normalizedBetType === "each_way" ? input.ewTerms : undefined,
     lockAt,
     status: "open",
     createdAt: now,
