@@ -1,7 +1,13 @@
 import { applicationDefault, cert, getApps, initializeApp } from "firebase-admin/app"
 import { getFirestore, type Firestore } from "firebase-admin/firestore"
 
-import { APP_TIMEZONE, CURRENT_SEASON, DEFAULT_USERS, EMPTY_RACE_RESULT, FIRESTORE_ROOT } from "../src/lib/constants"
+import {
+  APP_TIMEZONE,
+  CURRENT_SEASON,
+  DEFAULT_USERS,
+  EMPTY_RACE_RESULT,
+  FIRESTORE_ROOT,
+} from "../src/lib/constants.js"
 import type {
   Bet,
   BetLeg,
@@ -15,7 +21,7 @@ import type {
   RaceImportRun,
   UserProfile,
   UserStats,
-} from "../src/lib/types"
+} from "../src/lib/types.js"
 
 const PORT = Number(process.env.PORT ?? 3001)
 const APP_ORIGIN = process.env.APP_ORIGIN ?? "http://localhost:5173"

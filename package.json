@@ -10,6 +10,7 @@
     "dev:full": "bun run dev:server & bun run dev:client",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "check:esm": "node scripts/check-esm-imports.mjs",
     "preview": "vite preview",
     "test": "vitest run"
   },
