@@ -56,12 +56,19 @@ function computeAccumulatorDraftOdds(legs: BetDraftForm["legs"]): number | null 
   return Number.isFinite(combined) ? Math.round(combined * 10000) / 10000 : null
 }
 
+function formatStakeInput(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "0.00"
+  }
+  return value.toFixed(2)
+}
+
 function newDraft(userId: string): BetDraftForm {
   return {
     userId,
     betType: "single",
     betName: "",
-    stakeTotal: 2,
+    stakeTotal: 5,
     oddsUsed: null,
     ewTerms: {
       placesPaid: 3,
@@ -111,7 +118,7 @@ export function BetPanel({
   const [editingBetId, setEditingBetId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [stakeInput, setStakeInput] = useState("2")
+  const [stakeInput, setStakeInput] = useState("")
   const [quickRacePicks, setQuickRacePicks] = useState<Record<number, { day?: RaceDay; time?: string }>>({})
   const [accaOddsManuallySet, setAccaOddsManuallySet] = useState(false)
 
@@ -123,7 +130,7 @@ export function BetPanel({
   const resetDraft = (userId: string) => {
     const nextDraft = newDraft(userId)
     setDraft(nextDraft)
-    setStakeInput(String(nextDraft.stakeTotal))
+    setStakeInput("")
     setEditingBetId(null)
     setQuickRacePicks({})
     setAccaOddsManuallySet(false)
@@ -132,7 +139,7 @@ export function BetPanel({
   useEffect(() => {
     const nextDraft = newDraft(selectedUserId)
     setDraft(nextDraft)
-    setStakeInput(String(nextDraft.stakeTotal))
+    setStakeInput("")
     setEditingBetId(null)
     setQuickRacePicks({})
     setActionError(null)
@@ -168,7 +175,7 @@ export function BetPanel({
               horseUid: leg.horseUid,
             })),
     })
-    setStakeInput(String(bet.stakeTotal))
+    setStakeInput(formatStakeInput(bet.stakeTotal))
     setAccaOddsManuallySet(
       bet.betType === "accumulator" &&
         isValidOdds(resolvedOdds) &&
@@ -201,9 +208,9 @@ export function BetPanel({
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setActionError(null)
-    const parsedStakeTotal = Number(stakeInput)
+    const parsedStakeTotal = stakeInput.trim() === "" ? draft.stakeTotal : Number(stakeInput)
     if (!Number.isFinite(parsedStakeTotal) || parsedStakeTotal <= 0) {
-      setActionError("Stake must be greater than zero.")
+      setActionError("Stake (£) must be greater than £0.00.")
       return
     }
     if (hasMissingOtherName) {
@@ -563,10 +570,10 @@ export function BetPanel({
               <Label htmlFor="stake">Total Stake (£)</Label>
               <Input
                 id="stake"
-                type="number"
-                min={0.1}
-                step={0.1}
+                type="text"
+                inputMode="decimal"
                 value={stakeInput}
+                placeholder="5.00"
                 onChange={(event) => {
                   const rawValue = event.target.value
                   setStakeInput(rawValue)
@@ -576,6 +583,15 @@ export function BetPanel({
                       ...prev,
                       stakeTotal: parsed,
                     }))
+                  }
+                }}
+                onBlur={() => {
+                  if (stakeInput.trim() === "") {
+                    return
+                  }
+                  const parsed = Number(stakeInput)
+                  if (Number.isFinite(parsed)) {
+                    setStakeInput(formatStakeInput(parsed))
                   }
                 }}
               />
