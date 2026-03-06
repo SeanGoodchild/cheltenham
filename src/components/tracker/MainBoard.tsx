@@ -1,9 +1,10 @@
-import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react"
+import { ArrowDownRight, ArrowUpRight, Clock, Minus } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCurrency, formatOdds, formatPercent } from "@/lib/format"
 import { formatIso } from "@/lib/time"
 import type { Bet, Race, UserProfile, UserStats } from "@/lib/types"
+import { cn } from "@/lib/utils"
 
 type MainBoardProps = {
   bets: Bet[]
@@ -58,10 +59,9 @@ function CurrentRaceCard({ races, bets }: { races: Race[]; bets: Bet[] }) {
   if (!nextRace) {
     return (
       <Card className="shadow-xs">
-        <CardHeader>
-          <CardTitle>Next Race</CardTitle>
-        </CardHeader>
-        <CardContent>No upcoming races.</CardContent>
+        <CardContent className="py-8 text-center">
+          <div className="text-sm text-muted-foreground">All races settled. Final standings above.</div>
+        </CardContent>
       </Card>
     )
   }
@@ -71,25 +71,60 @@ function CurrentRaceCard({ races, bets }: { races: Race[]; bets: Bet[] }) {
 
   return (
     <Card className="shadow-xs">
-      <CardHeader>
-        <CardTitle>Next Race</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        <div className="text-lg font-semibold">{nextRace.name}</div>
-        <div className="text-sm text-muted-foreground">{formatIso(nextRace.offTime, "EEE HH:mm")}</div>
-        <div className="flex flex-wrap gap-2">
-          <Badge variant="secondary">{raceBets.length} bets</Badge>
-          <Badge variant="outline">{formatCurrency(raceStaked)} staked</Badge>
+      <CardContent className="py-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Clock className="size-3.5 text-muted-foreground" />
+              <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Next Race</span>
+            </div>
+            <div className="mt-1.5 text-base font-bold">{nextRace.name}</div>
+            <div className="mt-0.5 text-sm text-muted-foreground">{formatIso(nextRace.offTime, "EEE HH:mm")}</div>
+          </div>
+          <div className="flex flex-col items-end gap-1.5">
+            <Badge variant="secondary" className="tabular-nums">{raceBets.length} bets</Badge>
+            <Badge variant="outline" className="tabular-nums">{formatCurrency(raceStaked)}</Badge>
+          </div>
         </div>
         {nextRace.marketFavourite ? (
-          <div className="rounded-md border border-border/70 bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
-            Market favourite (IrishRacing):{" "}
-            <span className="font-medium text-foreground">{nextRace.marketFavourite.horseName}</span>{" "}
-            at {nextRace.marketFavourite.bestFractional} ({formatOdds(nextRace.marketFavourite.bestDecimal)})
+          <div className="mt-3 flex items-center gap-2 rounded-lg border border-border/40 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">
+            <span>Fav:</span>
+            <span className="font-medium text-foreground">{nextRace.marketFavourite.horseName}</span>
+            <span>{nextRace.marketFavourite.bestFractional} ({formatOdds(nextRace.marketFavourite.bestDecimal)})</span>
           </div>
         ) : null}
       </CardContent>
     </Card>
+  )
+}
+
+function RankChange({ delta, hasSettledRace }: { delta: number; hasSettledRace: boolean }) {
+  if (!hasSettledRace) {
+    return <span className="text-muted-foreground">-</span>
+  }
+
+  if (delta > 0) {
+    return (
+      <span className="inline-flex items-center gap-0.5 text-primary" title={`Up ${delta}`}>
+        <ArrowUpRight className="size-3.5" />
+        <span className="text-xs font-semibold">+{delta}</span>
+      </span>
+    )
+  }
+
+  if (delta < 0) {
+    return (
+      <span className="inline-flex items-center gap-0.5 text-destructive" title={`Down ${Math.abs(delta)}`}>
+        <ArrowDownRight className="size-3.5" />
+        <span className="text-xs font-semibold">{delta}</span>
+      </span>
+    )
+  }
+
+  return (
+    <span className="inline-flex items-center text-muted-foreground" title="No change">
+      <Minus className="size-3" />
+    </span>
   )
 }
 
@@ -172,77 +207,117 @@ export function MainBoard({
 
       <Card className="shadow-xs">
         <CardHeader>
-          <CardTitle>League Table</CardTitle>
-          {latestSettledRace ? (
-            <div className="text-xs text-muted-foreground">
-              Position change vs latest result ({formatIso(latestSettledRace.offTime, "EEE HH:mm")}).
+          <div className="flex items-end justify-between gap-2">
+            <div>
+              <CardTitle className="text-base font-bold">League Table</CardTitle>
+              {latestSettledRace ? (
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  Movement since {formatIso(latestSettledRace.offTime, "EEE HH:mm")}
+                </div>
+              ) : null}
             </div>
-          ) : null}
+          </div>
         </CardHeader>
-        <CardContent className="data-table-shell p-0">
-          <table className="data-table min-w-[820px]">
-            <thead>
-              <tr>
-                <th className="py-2">Pos</th>
-                <th>Move</th>
-                <th className="py-2">Mate</th>
-                <th>Staked</th>
-                <th>Returns</th>
-                <th>P/L</th>
-                <th>ROAS</th>
-                <th>Win %</th>
-                <th>Bets</th>
-                <th>Biggest Win</th>
-                <th>Avg Stake</th>
-              </tr>
-            </thead>
-            <tbody>
-              {leagueRows.map(({ user, userStats, currentRank, rankDelta }) => {
-                return (
-                  <tr key={user.id}>
-                    <td className="py-2 font-semibold">{currentRank}</td>
-                    <td className="py-2">
-                      {!latestSettledRace ? (
-                        <span className="inline-flex items-center text-muted-foreground">
-                          <Minus className="mr-1 size-3.5" />
-                          —
-                        </span>
-                      ) : rankDelta > 0 ? (
-                        <span className="inline-flex items-center text-primary" title={`Up ${rankDelta} place(s)`}>
-                          <ArrowUpRight className="mr-1 size-3.5" />
-                          +{rankDelta}
-                        </span>
-                      ) : rankDelta < 0 ? (
+
+        {/* Desktop table */}
+        <CardContent className="hidden md:block">
+          <div className="data-table-shell p-0">
+            <table className="data-table min-w-[780px]">
+              <thead>
+                <tr>
+                  <th className="w-12 text-center">#</th>
+                  <th className="w-14">Move</th>
+                  <th>Name</th>
+                  <th>Staked</th>
+                  <th>Returns</th>
+                  <th>P/L</th>
+                  <th>ROAS</th>
+                  <th>Win %</th>
+                  <th>Bets</th>
+                  <th>Best Win</th>
+                  <th>Avg Stake</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leagueRows.map(({ user, userStats, currentRank, rankDelta }, index) => {
+                  return (
+                    <tr
+                      key={user.id}
+                      className={cn(index === 0 && currentRank === 1 ? "!bg-primary/[0.04]" : "")}
+                    >
+                      <td className="text-center">
                         <span
-                          className="inline-flex items-center text-destructive"
-                          title={`Down ${Math.abs(rankDelta)} place(s)`}
+                          className="position-badge"
+                          data-pos={currentRank <= 3 ? currentRank : undefined}
                         >
-                          <ArrowDownRight className="mr-1 size-3.5" />
-                          {rankDelta}
+                          {currentRank}
                         </span>
-                      ) : (
-                        <span className="inline-flex items-center text-muted-foreground" title="No change">
-                          <Minus className="mr-1 size-3.5" />
-                          0
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2 font-medium">{user.displayName}</td>
-                    <td>{formatCurrency(userStats.totalStaked)}</td>
-                    <td>{formatCurrency(userStats.totalReturns)}</td>
-                    <td className={userStats.profitLoss < 0 ? "text-destructive" : "text-primary"}>
-                      {formatCurrency(userStats.profitLoss)}
-                    </td>
-                    <td>{formatPercent(userStats.roasPct)}</td>
-                    <td>{formatPercent(userStats.winPct)}</td>
-                    <td>{userStats.betsPlaced}</td>
-                    <td>{formatCurrency(userStats.biggestWin)}</td>
-                    <td>{formatCurrency(userStats.averageStake)}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+                      </td>
+                      <td>
+                        <RankChange delta={rankDelta} hasSettledRace={Boolean(latestSettledRace)} />
+                      </td>
+                      <td className="font-semibold">{user.displayName}</td>
+                      <td className="tabular-nums">{formatCurrency(userStats.totalStaked)}</td>
+                      <td className="tabular-nums">{formatCurrency(userStats.totalReturns)}</td>
+                      <td className={cn(
+                        "font-semibold tabular-nums",
+                        userStats.profitLoss < 0 ? "text-destructive" : "text-primary",
+                      )}>
+                        {formatCurrency(userStats.profitLoss)}
+                      </td>
+                      <td className="tabular-nums">{formatPercent(userStats.roasPct)}</td>
+                      <td className="tabular-nums">{formatPercent(userStats.winPct)}</td>
+                      <td className="tabular-nums">{userStats.betsPlaced}</td>
+                      <td className="tabular-nums">{formatCurrency(userStats.biggestWin)}</td>
+                      <td className="tabular-nums">{formatCurrency(userStats.averageStake)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+
+        {/* Mobile cards */}
+        <CardContent className="space-y-2 md:hidden">
+          {leagueRows.map(({ user, userStats, currentRank, rankDelta }) => (
+            <div
+              key={user.id}
+              className={cn(
+                "bet-card",
+                currentRank === 1 ? "!border-primary/20 !bg-primary/[0.04]" : "",
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <span
+                  className="position-badge shrink-0"
+                  data-pos={currentRank <= 3 ? currentRank : undefined}
+                >
+                  {currentRank}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-bold">{user.displayName}</span>
+                    <RankChange delta={rankDelta} hasSettledRace={Boolean(latestSettledRace)} />
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                    <span>{userStats.betsPlaced} bets</span>
+                    <span>Staked {formatCurrency(userStats.totalStaked)}</span>
+                    <span>Win {formatPercent(userStats.winPct)}</span>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className={cn(
+                    "text-sm font-bold tabular-nums",
+                    userStats.profitLoss < 0 ? "text-destructive" : "text-primary",
+                  )}>
+                    {formatCurrency(userStats.profitLoss)}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">P/L</div>
+                </div>
+              </div>
+            </div>
+          ))}
         </CardContent>
       </Card>
     </div>

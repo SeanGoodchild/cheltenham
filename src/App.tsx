@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { BarChart3, ChevronDown, Menu, RefreshCw, Shield, UserRound, Wallet, X } from "lucide-react"
+import { ChevronDown, Clock, Menu, RefreshCw, Shield, Trophy, UserRound, Wallet, X } from "lucide-react"
 
 import { AdminPanel } from "@/components/tracker/AdminPanel"
 import { BetPanel, type BetDraftForm } from "@/components/tracker/BetPanel"
@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
+// Card removed -- errors use inline div now
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -52,9 +52,9 @@ type AppTab = "new-bet" | "main-cashboard" | "user-summary"
 type MainBoardUserView = { mode: "all" } | { mode: "custom"; userIds: string[] }
 
 const TABS: Array<{ id: AppTab; label: string; shortLabel: string; icon: typeof Wallet }> = [
-  { id: "new-bet", label: "New Bet", shortLabel: "Bet", icon: Wallet },
-  { id: "main-cashboard", label: "Main Cashboard", shortLabel: "Main", icon: BarChart3 },
-  { id: "user-summary", label: "My Summary", shortLabel: "Summary", icon: UserRound },
+  { id: "new-bet", label: "Place a Bet", shortLabel: "Bet", icon: Wallet },
+  { id: "main-cashboard", label: "Cashboard", shortLabel: "Board", icon: Trophy },
+  { id: "user-summary", label: "My Bets", shortLabel: "My Bets", icon: UserRound },
 ]
 
 function toBetDraft(form: BetDraftForm) {
@@ -95,6 +95,26 @@ function formatCountdown(msUntil: number): string {
     return `${minutes}m ${seconds}s`
   }
   return `${seconds}s`
+}
+
+function UserAvatar({ name, size = "md" }: { name: string; size?: "sm" | "md" }) {
+  const initials = name
+    .split(/\s+/)
+    .map((word) => word[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2)
+
+  return (
+    <div
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center rounded-lg bg-primary/15 font-semibold text-primary",
+        size === "sm" ? "h-7 w-7 text-[10px]" : "h-9 w-9 text-xs",
+      )}
+    >
+      {initials}
+    </div>
+  )
 }
 
 export function App() {
@@ -141,6 +161,7 @@ export function App() {
   const resolvedSelectedUserId = hasValidSelectedUser ? selectedUserId : ""
   const identityGateOpen = !bootstrapping && users.length > 0 && !hasValidSelectedUser
   const selectedSummaryUser = users.find((user) => user.id === resolvedSelectedUserId)
+  const selectedUserDisplayName = selectedSummaryUser?.displayName ?? ""
   const mainBoardUserOptions = useMemo(() => {
     const self = users.find((user) => user.id === resolvedSelectedUserId)
     if (!self) {
@@ -191,17 +212,20 @@ export function App() {
   const activeTabMeta = TABS.find((tab) => tab.id === activeTab) ?? TABS[0]
   const lastRefreshedLabel = formatLastRefreshed(raceImportRun)
   const effectiveSelectedUserId = resolvedSelectedUserId || identityDraftUserId || users[0]?.id || ""
-  const nextRaceCountdownLabel = useMemo(() => {
+  const nextRaceInfo = useMemo(() => {
     const nextRace = races
       .filter((race) => new Date(race.offTime).getTime() > nowTickMs)
       .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0]
 
     if (!nextRace) {
-      return "No upcoming race"
+      return { label: "No upcoming race", countdown: "" }
     }
 
     const msUntil = new Date(nextRace.offTime).getTime() - nowTickMs
-    return `${formatIso(nextRace.offTime, "EEE HH:mm")} in ${formatCountdown(msUntil)}`
+    return {
+      label: formatIso(nextRace.offTime, "EEE HH:mm"),
+      countdown: formatCountdown(msUntil),
+    }
   }, [nowTickMs, races])
 
   const persistUserId = (value: string) => {
@@ -378,96 +402,149 @@ export function App() {
     }
   }, [])
 
+  // --- Loading state ---
   if (bootstrapping) {
     return (
-      <main className="mx-auto min-h-screen max-w-6xl p-4 md:p-6">
-        <Card>
-          <CardContent className="py-8 text-center">Compiling toots...</CardContent>
-        </Card>
+      <main className="flex min-h-screen items-center justify-center p-4">
+        <div className="text-center">
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
+          <div className="text-sm font-medium text-muted-foreground">Loading the tracker...</div>
+        </div>
       </main>
     )
   }
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="md:grid md:min-h-screen md:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="hidden border-r border-border/80 bg-card/60 md:block">
-          <div className="sticky top-0 flex h-screen flex-col gap-5 px-4 py-5">
-            <div className="space-y-1">
-              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Cheltenham Festival 2026</div>
-              <h1 className="text-2xl font-semibold">Ca$h Lad$ Tracker</h1>
+      <div className="md:grid md:min-h-screen md:grid-cols-[260px_minmax(0,1fr)]">
+        {/* ─── Desktop Sidebar ─── */}
+        <aside className="hidden border-r border-border/60 bg-card/40 md:block">
+          <div className="sticky top-0 flex h-screen flex-col px-4 py-5">
+            {/* Brand */}
+            <div className="mb-6 space-y-1">
+              <div className="text-[10px] font-medium uppercase tracking-[0.25em] text-muted-foreground">
+                Cheltenham 2026
+              </div>
+              <h1 className="text-xl font-bold tracking-tight">Ca$h Lad$</h1>
             </div>
 
-            <nav className="space-y-2">
+            {/* User identity */}
+            {selectedUserDisplayName ? (
+              <div className="mb-5 flex items-center gap-2.5 rounded-xl border border-border/50 bg-muted/20 px-3 py-2.5">
+                <UserAvatar name={selectedUserDisplayName} />
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold">{selectedUserDisplayName}</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {bets.filter((b) => b.userId === resolvedSelectedUserId).length} bets placed
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {/* Nav tabs */}
+            <nav className="space-y-1">
               {TABS.map((tab) => (
-                <Button
+                <button
                   key={`desktop-tab-${tab.id}`}
                   type="button"
-                  variant={activeTab === tab.id ? "default" : "ghost"}
-                  className="w-full justify-start gap-2"
+                  className={cn(
+                    "flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                    activeTab === tab.id
+                      ? "bg-primary/15 text-primary"
+                      : "text-muted-foreground hover:bg-muted/30 hover:text-foreground",
+                  )}
                   onClick={() => setActiveTab(tab.id)}
                 >
                   <tab.icon className="size-4" />
                   {tab.label}
-                </Button>
+                </button>
               ))}
             </nav>
 
-            <div className="space-y-3 rounded-xl border border-border/70 bg-card px-3 py-3">
-              <Button type="button" className="w-full justify-start gap-2" variant="outline" onClick={openAdminPanel}>
+            {/* Next race countdown */}
+            {nextRaceInfo.countdown ? (
+              <div className="mt-5 rounded-xl border border-border/50 bg-muted/20 px-3 py-2.5">
+                <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <Clock className="size-3" />
+                  Next race
+                </div>
+                <div className="mt-1 text-sm font-semibold">{nextRaceInfo.label}</div>
+                <div className="text-xs text-muted-foreground">in {nextRaceInfo.countdown}</div>
+              </div>
+            ) : null}
+
+            {/* Spacer */}
+            <div className="flex-1" />
+
+            {/* Admin */}
+            <div className="space-y-2">
+              {trackerMode === "simulated" ? (
+                <Badge variant="outline" className="w-full justify-center">Simulated Mode</Badge>
+              ) : null}
+              <button
+                type="button"
+                className="flex w-full items-center gap-2.5 rounded-lg border border-border/50 bg-muted/10 px-3 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground"
+                onClick={openAdminPanel}
+              >
                 <Shield className="size-4" />
-                Admin actions
-              </Button>
+                Admin Panel
+              </button>
             </div>
           </div>
         </aside>
 
+        {/* ─── Main Content ─── */}
         <div className="flex min-h-screen flex-col">
-          <header className="sticky top-0 z-40 border-b border-border/80 bg-background/95 px-4 py-3 backdrop-blur md:hidden">
-            <div className="flex items-center justify-between gap-3">
-              <Button
+          {/* Mobile header */}
+          <header className="sticky top-0 z-40 border-b border-border/60 bg-background/90 px-4 py-2.5 backdrop-blur-xl md:hidden">
+            <div className="flex items-center justify-between gap-2">
+              <button
                 type="button"
-                size="icon"
-                variant="ghost"
+                className="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground"
                 aria-label="Open menu"
                 onClick={() => setMobileMenuOpen(true)}
               >
                 <Menu className="size-5" />
-              </Button>
+              </button>
               <div className="min-w-0 text-center">
-                <div className="truncate text-sm font-semibold">Cheltenham Bet Tracker</div>
-                <div className="truncate text-xs text-muted-foreground">{activeTabMeta.label}</div>
+                <div className="text-sm font-bold tracking-tight">Ca$h Lad$</div>
               </div>
-              <Badge variant="secondary" className="max-w-[170px] truncate text-[11px]">
-                {nextRaceCountdownLabel}
-              </Badge>
+              {nextRaceInfo.countdown ? (
+                <div className="flex items-center gap-1.5 rounded-lg bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
+                  <Clock className="size-3" />
+                  <span className="font-medium">{nextRaceInfo.countdown}</span>
+                </div>
+              ) : (
+                <div className="w-9" />
+              )}
             </div>
             {trackerMode === "simulated" ? (
-              <div className="mt-2 text-center">
-                <Badge variant="outline">Simulated Results Mode</Badge>
+              <div className="mt-1.5 text-center">
+                <Badge variant="outline" className="text-[10px]">Simulated Mode</Badge>
               </div>
             ) : null}
           </header>
 
-          <main className="flex-1 px-4 py-4 pb-24 md:px-6 md:py-6 md:pb-6">
-            <div className="mx-auto w-full max-w-6xl space-y-4">
-              <div className="hidden items-center justify-between rounded-xl border border-border bg-card px-4 py-3 shadow-xs md:flex">
+          {/* Page content */}
+          <main className="flex-1 px-4 py-4 pb-24 md:px-6 md:py-5 md:pb-6">
+            <div className="mx-auto w-full max-w-5xl space-y-4">
+              {/* Desktop page header */}
+              <div className="hidden items-center justify-between md:flex">
                 <div>
-                  <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Cheltenham Festival 2026</div>
-                  <div className="text-lg font-semibold">{activeTabMeta.label}</div>
+                  <h2 className="text-lg font-bold tracking-tight">{activeTabMeta.label}</h2>
                 </div>
-                <Badge variant="secondary">{nextRaceCountdownLabel}</Badge>
+                {nextRaceInfo.countdown ? (
+                  <div className="flex items-center gap-2 rounded-lg bg-muted/20 px-3 py-1.5 text-xs text-muted-foreground">
+                    <Clock className="size-3.5" />
+                    <span>Next: <span className="font-medium text-foreground">{nextRaceInfo.label}</span> in {nextRaceInfo.countdown}</span>
+                  </div>
+                ) : null}
               </div>
-              {trackerMode === "simulated" ? (
-                <div className="mt-2 flex justify-end">
-                  <Badge variant="outline">Simulated Results Mode</Badge>
-                </div>
-              ) : null}
 
               {(error || actionError) && (
-                <Card>
-                  <CardContent className="py-4 text-sm text-destructive">{error ?? actionError}</CardContent>
-                </Card>
+                <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                  {error ?? actionError}
+                </div>
               )}
 
               {activeTab === "new-bet" ? (
@@ -484,15 +561,15 @@ export function App() {
               {activeTab === "main-cashboard" ? (
                 <div className="space-y-4">
                   <StatsCards
-                    title="Main Cashboard"
+                    title="Cashboard"
                     middleContent={<PnlCandlesPanel bets={mainBoardBets} races={races} />}
                     headerRight={
                       <DropdownMenu>
                         <DropdownMenuTrigger
-                          className="inline-flex h-9 min-w-[170px] items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-sm"
+                          className="inline-flex h-9 min-w-[150px] items-center justify-between gap-2 rounded-lg border border-input bg-muted/20 px-3 text-sm transition-colors hover:bg-muted/40"
                         >
                           <span className="truncate">{mainBoardViewLabel}</span>
-                          <ChevronDown className="size-4 text-muted-foreground" />
+                          <ChevronDown className="size-3.5 text-muted-foreground" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-56">
                           <DropdownMenuCheckboxItem
@@ -542,32 +619,57 @@ export function App() {
         </div>
       </div>
 
+      {/* ─── Mobile Slide-out Menu ─── */}
       {mobileMenuOpen ? (
         <div className="fixed inset-0 z-50 md:hidden">
           <button
             type="button"
-            className="absolute inset-0 bg-black/55"
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
             aria-label="Close menu"
             onClick={() => setMobileMenuOpen(false)}
           />
-          <aside className="absolute left-0 top-0 flex h-full w-[86%] max-w-[320px] flex-col border-r border-border bg-card p-4">
-            <div className="mb-4 flex items-center justify-between">
+          <aside className="absolute left-0 top-0 flex h-full w-[82%] max-w-[300px] flex-col border-r border-border/60 bg-card p-4">
+            <div className="mb-5 flex items-center justify-between">
               <div>
-                <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Menu</div>
-                <div className="text-base font-semibold">Ca$h Lad$ Tracker</div>
+                <div className="text-[10px] font-medium uppercase tracking-[0.25em] text-muted-foreground">
+                  Cheltenham 2026
+                </div>
+                <div className="text-base font-bold tracking-tight">Ca$h Lad$</div>
               </div>
-              <Button type="button" size="icon" variant="ghost" aria-label="Close menu" onClick={() => setMobileMenuOpen(false)}>
-                <X className="size-5" />
-              </Button>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted/30"
+                aria-label="Close menu"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                <X className="size-4" />
+              </button>
             </div>
 
-            <nav className="space-y-2">
+            {/* User identity */}
+            {selectedUserDisplayName ? (
+              <div className="mb-4 flex items-center gap-2.5 rounded-xl border border-border/50 bg-muted/20 px-3 py-2.5">
+                <UserAvatar name={selectedUserDisplayName} />
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold">{selectedUserDisplayName}</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {bets.filter((b) => b.userId === resolvedSelectedUserId).length} bets placed
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            <nav className="space-y-1">
               {TABS.map((tab) => (
-                <Button
+                <button
                   key={`mobile-tab-${tab.id}`}
                   type="button"
-                  variant={activeTab === tab.id ? "default" : "ghost"}
-                  className="w-full justify-start gap-2"
+                  className={cn(
+                    "flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                    activeTab === tab.id
+                      ? "bg-primary/15 text-primary"
+                      : "text-muted-foreground hover:bg-muted/30 hover:text-foreground",
+                  )}
                   onClick={() => {
                     setActiveTab(tab.id)
                     setMobileMenuOpen(false)
@@ -575,48 +677,72 @@ export function App() {
                 >
                   <tab.icon className="size-4" />
                   {tab.label}
-                </Button>
+                </button>
               ))}
             </nav>
 
-            <div className="mt-5 space-y-3 rounded-xl border border-border/70 bg-card px-3 py-3">
-              <Button type="button" className="w-full justify-start gap-2" variant="outline" onClick={openAdminPanel}>
+            <div className="flex-1" />
+
+            <div className="space-y-2">
+              {trackerMode === "simulated" ? (
+                <Badge variant="outline" className="w-full justify-center">Simulated Mode</Badge>
+              ) : null}
+              <button
+                type="button"
+                className="flex w-full items-center gap-2.5 rounded-lg border border-border/50 bg-muted/10 px-3 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground"
+                onClick={openAdminPanel}
+              >
                 <Shield className="size-4" />
-                Admin actions
-              </Button>
+                Admin Panel
+              </button>
             </div>
           </aside>
         </div>
       ) : null}
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border/80 bg-background/95 px-2 pt-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] backdrop-blur md:hidden">
-        <div className="grid grid-cols-3 gap-2">
-          {TABS.map((tab) => (
-            <Button
-              key={`bottom-tab-${tab.id}`}
-              type="button"
-              size="sm"
-              variant={activeTab === tab.id ? "default" : "ghost"}
-              className="h-11 flex-col gap-1 text-[11px]"
-              onClick={() => setActiveTab(tab.id)}
-            >
-              <tab.icon className="size-4" />
-              {tab.shortLabel}
-            </Button>
-          ))}
+      {/* ─── Mobile Bottom Nav ─── */}
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-background/90 px-3 pt-1.5 pb-[calc(env(safe-area-inset-bottom)+0.25rem)] backdrop-blur-xl md:hidden">
+        <div className="flex justify-around">
+          {TABS.map((tab) => {
+            const isActive = activeTab === tab.id
+            return (
+              <button
+                key={`bottom-tab-${tab.id}`}
+                type="button"
+                className={cn(
+                  "flex flex-col items-center gap-0.5 rounded-lg px-4 py-1.5 text-[11px] font-medium transition-colors",
+                  isActive
+                    ? "text-primary"
+                    : "text-muted-foreground",
+                )}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <div className={cn(
+                  "flex h-7 w-7 items-center justify-center rounded-lg transition-colors",
+                  isActive ? "bg-primary/15" : "",
+                )}>
+                  <tab.icon className="size-4" />
+                </div>
+                {tab.shortLabel}
+              </button>
+            )
+          })}
         </div>
       </nav>
 
+      {/* ─── Identity Gate ─── */}
       <AlertDialog open={identityGateOpen}>
         <AlertDialogContent className="max-w-sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Choose Your Lad</AlertDialogTitle>
-            <AlertDialogDescription>
-              Pick your identity to start. It is saved locally and can be changed later in Admin actions.
+            <AlertDialogTitle className="text-center text-xl">Welcome, lad</AlertDialogTitle>
+            <AlertDialogDescription className="text-center">
+              Pick your name to get started. You can change this any time from the admin panel.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="space-y-1">
-            <Label htmlFor="identity-gate-select">Lad</Label>
+          <div className="space-y-2">
+            <Label htmlFor="identity-gate-select" className="text-xs uppercase tracking-wide text-muted-foreground">
+              Who are you?
+            </Label>
             <select
               id="identity-gate-select"
               className="native-select"
@@ -633,6 +759,7 @@ export function App() {
           <AlertDialogFooter>
             <Button
               type="button"
+              className="w-full"
               disabled={!identityDraftUserId}
               onClick={() => {
                 if (!identityDraftUserId) {
@@ -641,29 +768,30 @@ export function App() {
                 persistUserId(identityDraftUserId)
               }}
             >
-              Continue
+              Let's go
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* ─── Admin Dialog ─── */}
       <AlertDialog open={adminOpen} onOpenChange={setAdminOpen}>
         <AlertDialogContent className="!left-0 !top-auto !bottom-0 !h-[92vh] !w-full !max-w-none !translate-x-0 !translate-y-0 rounded-b-none rounded-t-2xl p-0 md:!left-1/2 md:!top-1/2 md:!bottom-auto md:!h-[86vh] md:!max-w-5xl md:!-translate-x-1/2 md:!-translate-y-1/2 md:rounded-2xl">
           <div className="flex h-full flex-col">
-            <div className="flex items-center justify-between border-b border-border px-4 py-3 md:px-6">
+            <div className="flex items-center justify-between border-b border-border/60 px-4 py-3 md:px-6">
               <div className="space-y-0.5">
-                <div className="text-xs uppercase tracking-wide text-muted-foreground">Admin</div>
-                <h2 className="text-base font-semibold">Race & settlement actions</h2>
+                <div className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">Admin</div>
+                <h2 className="text-base font-bold tracking-tight">Race & Settlement</h2>
               </div>
               <Button type="button" size="sm" variant="outline" onClick={() => setAdminOpen(false)}>
                 Close
               </Button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 md:p-6">
-              <div className="mb-4 space-y-3 rounded-xl border border-border/70 bg-card p-3">
+              <div className="mb-4 space-y-3 rounded-xl border border-border/50 bg-muted/10 p-4">
                 <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-                  <div className="space-y-1">
-                    <Label htmlFor="admin-user-switch" className="text-xs uppercase tracking-wide text-muted-foreground">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="admin-user-switch" className="text-[11px] uppercase tracking-wide text-muted-foreground">
                       Active Lad
                     </Label>
                     <select
@@ -695,9 +823,9 @@ export function App() {
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-[auto_auto_minmax(0,1fr)] md:items-end">
-                  <div className="space-y-1">
-                    <div className="text-xs uppercase tracking-wide text-muted-foreground">Data Mode</div>
-                    <div className="flex gap-2">
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Data Mode</div>
+                    <div className="flex gap-1.5">
                       <Button
                         type="button"
                         size="sm"

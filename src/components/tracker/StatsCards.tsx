@@ -1,8 +1,22 @@
 import type { ReactNode } from "react"
+import {
+  ArrowDownRight,
+  ArrowUpRight,
+  Banknote,
+  BarChart3,
+  CircleDollarSign,
+  Percent,
+  PiggyBank,
+  Target,
+  TrendingDown,
+  TrendingUp,
+  Trophy,
+} from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCurrency, formatOdds, formatPercent } from "@/lib/format"
 import type { GlobalStats, UserStats } from "@/lib/types"
+import { cn } from "@/lib/utils"
 
 type StatsCardsProps = {
   title: string
@@ -22,55 +36,99 @@ type StatsCardsProps = {
   >
 }
 
-function StatItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="panel-subtle min-w-0">
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="mt-1 truncate text-base font-semibold">{value}</div>
-    </div>
-  )
+const STAT_CONFIG = [
+  { key: "totalStaked", label: "Total Staked", icon: Banknote, format: "currency" },
+  { key: "totalReturns", label: "Returns", icon: CircleDollarSign, format: "currency" },
+  { key: "roasPct", label: "ROAS", icon: Percent, format: "percent" },
+  { key: "averageStake", label: "Avg Stake", icon: PiggyBank, format: "currency" },
+  { key: "averageOdds", label: "Avg Odds", icon: Target, format: "odds" },
+  { key: "winPct", label: "Win %", icon: Trophy, format: "percent" },
+  { key: "betsPlaced", label: "Bets", icon: BarChart3, format: "number" },
+  { key: "biggestLoss", label: "Worst Bet", icon: TrendingDown, format: "currency", negative: true },
+  { key: "biggestWin", label: "Best Win", icon: TrendingUp, format: "currency", positive: true },
+] as const
+
+function formatStatValue(value: number, format: string): string {
+  switch (format) {
+    case "currency":
+      return formatCurrency(value)
+    case "percent":
+      return formatPercent(value)
+    case "odds":
+      return value > 0 ? formatOdds(value) : "-"
+    case "number":
+      return String(value)
+    default:
+      return String(value)
+  }
 }
 
 export function StatsCards({ title, middleContent, headerRight, stats }: StatsCardsProps) {
   const meterTarget = Math.max(2500, Math.ceil(stats.totalStaked / 250) * 250)
   const meterPct = Math.min(100, (stats.totalStaked / meterTarget) * 100)
+  const pnl = stats.totalReturns - stats.totalStaked
+  const isProfitable = pnl >= 0
 
   return (
     <Card className="h-full shadow-xs">
       <CardHeader>
         <div className="flex flex-wrap items-end justify-between gap-3">
-          <CardTitle>{title}</CardTitle>
+          <CardTitle className="text-base font-bold">{title}</CardTitle>
           {headerRight}
         </div>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="panel-subtle">
-          <div className="flex items-center justify-between text-xs uppercase tracking-wide text-muted-foreground">
-            <span>Cash-o-Meter</span>
-            <span>
+      <CardContent className="space-y-4">
+        {/* Cash-o-Meter */}
+        <div className="rounded-xl border border-border/50 bg-muted/15 p-3.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Cash-o-Meter</span>
+            </div>
+            <span className="text-xs tabular-nums text-muted-foreground">
               {formatCurrency(stats.totalStaked)} / {formatCurrency(meterTarget)}
             </span>
           </div>
-          <div className="mt-2 h-3 overflow-hidden rounded-full bg-muted">
+          <div className="mt-2.5 h-2.5 overflow-hidden rounded-full bg-muted/50">
             <div
-              className="h-full rounded-full bg-primary transition-all duration-500"
+              className="h-full rounded-full bg-gradient-to-r from-primary/80 to-primary transition-all duration-700 ease-out"
               style={{ width: `${meterPct}%` }}
             />
+          </div>
+          <div className="mt-2 flex items-center justify-between text-xs">
+            <span className="text-muted-foreground">{meterPct.toFixed(0)}% of target</span>
+            <span className={cn(
+              "flex items-center gap-1 font-semibold",
+              isProfitable ? "text-primary" : "text-destructive",
+            )}>
+              {isProfitable ? <ArrowUpRight className="size-3" /> : <ArrowDownRight className="size-3" />}
+              {formatCurrency(pnl)} P&L
+            </span>
           </div>
         </div>
 
         {middleContent}
 
+        {/* Stats grid */}
         <div className="grid grid-cols-3 gap-2">
-          <StatItem label="Total Staked" value={formatCurrency(stats.totalStaked)} />
-          <StatItem label="Total Returns" value={formatCurrency(stats.totalReturns)} />
-          <StatItem label="ROAS" value={formatPercent(stats.roasPct)} />
-          <StatItem label="Avg Stake" value={formatCurrency(stats.averageStake)} />
-          <StatItem label="Avg Odds" value={stats.averageOdds > 0 ? formatOdds(stats.averageOdds) : "-"} />
-          <StatItem label="Win %" value={formatPercent(stats.winPct)} />
-          <StatItem label="Bets Placed" value={String(stats.betsPlaced)} />
-          <StatItem label="Biggest Loss" value={formatCurrency(stats.biggestLoss)} />
-          <StatItem label="Biggest Win" value={formatCurrency(stats.biggestWin)} />
+          {STAT_CONFIG.map((config) => {
+            const value = stats[config.key] as number
+            const Icon = config.icon
+            return (
+              <div key={config.key} className="stat-card">
+                <div className="flex items-center gap-1.5">
+                  <Icon className="size-3 text-muted-foreground" />
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{config.label}</span>
+                </div>
+                <div className={cn(
+                  "mt-1.5 truncate text-sm font-bold tabular-nums",
+                  "negative" in config && config.negative && value < 0 ? "text-destructive" : "",
+                  "positive" in config && config.positive && value > 0 ? "text-primary" : "",
+                )}>
+                  {formatStatValue(value, config.format)}
+                </div>
+              </div>
+            )
+          })}
         </div>
       </CardContent>
     </Card>
