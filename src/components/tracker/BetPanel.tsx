@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { AlertCircle, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -10,6 +11,7 @@ import { normalizeHorseName } from "@/lib/horse"
 import { calculateBetPotentialReturn, resolveBetOddsUsed } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
 import type { Bet, BetType, Race, RaceDay } from "@/lib/types"
+import { cn } from "@/lib/utils"
 
 export type BetDraftForm = {
   userId: string
@@ -103,6 +105,23 @@ function findMarketDecimalOdds(race: Race | undefined, selectionName: string, ho
   const bestDecimal = byUid?.bestDecimal ?? byName?.bestDecimal
 
   return Number.isFinite(bestDecimal) && Number(bestDecimal) >= 1 ? Number(bestDecimal) : null
+}
+
+const BET_TYPE_OPTIONS: Array<{ value: BetType; label: string }> = [
+  { value: "single", label: "Single" },
+  { value: "each_way", label: "Each Way" },
+  { value: "accumulator", label: "Acca" },
+  { value: "other", label: "Other" },
+]
+
+function StatusBadge({ status }: { status: string }) {
+  const variant =
+    status === "settled"
+      ? "default"
+      : status === "open"
+        ? "secondary"
+        : "outline"
+  return <Badge variant={variant} className="text-[10px]">{status}</Badge>
 }
 
 export function BetPanel({
@@ -205,12 +224,28 @@ export function BetPanel({
   const hasMissingOdds = draft.betType === "other" ? false : !isValidOdds(requiredOdds)
   const hasMissingOtherName = draft.betType === "other" && !draft.betName?.trim()
 
+  // Compute potential win for display
+  const potentialWinDisplay = useMemo(() => {
+    const parsedStake = stakeInput.trim() === "" ? draft.stakeTotal : Number(stakeInput)
+    if (!Number.isFinite(parsedStake) || parsedStake <= 0) return null
+    const odds = draft.betType === "accumulator" ? draft.oddsUsed : draft.legs[0]?.decimalOdds
+    if (!isValidOdds(odds)) return null
+
+    if (draft.betType === "each_way" && draft.ewTerms) {
+      const winReturn = parsedStake * 0.5 * Number(odds)
+      const placeOdds = 1 + (Number(odds) - 1) * draft.ewTerms.placeFraction
+      const placeReturn = parsedStake * 0.5 * placeOdds
+      return { win: winReturn - parsedStake, place: placeReturn - parsedStake }
+    }
+    return { win: parsedStake * Number(odds) - parsedStake, place: null }
+  }, [draft, stakeInput])
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setActionError(null)
     const parsedStakeTotal = stakeInput.trim() === "" ? draft.stakeTotal : Number(stakeInput)
     if (!Number.isFinite(parsedStakeTotal) || parsedStakeTotal <= 0) {
-      setActionError("Stake (£) must be greater than £0.00.")
+      setActionError("Stake must be greater than £0.00.")
       return
     }
     if (hasMissingOtherName) {
@@ -326,436 +361,527 @@ export function BetPanel({
   }
 
   return (
-    <Card className="shadow-xs">
-      <CardHeader>
-        <CardTitle>Place Bet</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        <form className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-1">
-            <Label htmlFor="bet-type">Bet Type</Label>
-            <select
-              id="bet-type"
-              value={draft.betType}
-              className="native-select"
-              onChange={(event) => handleBetTypeChange(event.target.value as BetType)}
-            >
-              <option value="single">Single</option>
-              <option value="each_way">Each-way</option>
-              <option value="accumulator">Accumulator</option>
-              <option value="other">Other</option>
-            </select>
-          </div>
-
-          {draft.betType === "other" ? (
-            <div className="space-y-1">
-              <Label htmlFor="other-bet-name">Bet Name</Label>
-              <Input
-                id="other-bet-name"
-                value={draft.betName ?? ""}
-                placeholder="e.g. Footy + racing weekend acca"
-                onChange={(event) =>
-                  setDraft((prev) => ({
-                    ...prev,
-                    betName: event.target.value,
-                  }))
-                }
-              />
-              <div className="text-xs text-muted-foreground">
-                Other bets are manually settled later in your summary page.
+    <div className="space-y-4">
+      <Card className="shadow-xs">
+        <CardHeader>
+          <CardTitle className="text-base font-bold">
+            {editingBetId ? "Edit Bet" : "Place a Bet"}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <form className="space-y-5" onSubmit={handleSubmit}>
+            {/* Bet type chip selector */}
+            <div className="space-y-2">
+              <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Bet Type</Label>
+              <div className="chip-group">
+                {BET_TYPE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className="chip"
+                    data-active={draft.betType === option.value}
+                    onClick={() => handleBetTypeChange(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
               </div>
             </div>
-          ) : null}
 
-          {draft.betType !== "other" ? (
-            <div className="space-y-2">
-              {draft.legs.map((leg, index) => {
-              const race = raceMap.get(leg.raceId)
-              const quickPick = quickRacePicks[index]
-              const selectedDay = quickPick?.day ?? race?.day
-              const selectedTime = quickPick?.time ?? (race ? raceTimeLabel(race.offTime) : undefined)
-              const dayRaces = selectedDay ? racesByDay[selectedDay] : []
-              const dayTimes = [...new Set(dayRaces.map((entry) => raceTimeLabel(entry.offTime)))]
-              const horseOptions = (
-                race?.runnersDetailed?.filter((runner) => !runner.nonRunner).map((runner) => runner.horseName) ??
-                race?.runners ??
-                []
-              )
-                .slice()
-                .sort((a, b) => a.localeCompare(b))
-              const datalistId = `runners-${index}`
+            {draft.betType === "other" ? (
+              <div className="space-y-1.5">
+                <Label htmlFor="other-bet-name">Bet Name</Label>
+                <Input
+                  id="other-bet-name"
+                  value={draft.betName ?? ""}
+                  placeholder="e.g. Footy + racing weekend acca"
+                  onChange={(event) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      betName: event.target.value,
+                    }))
+                  }
+                />
+                <div className="text-xs text-muted-foreground">
+                  Settle this manually later from My Bets.
+                </div>
+              </div>
+            ) : null}
 
-                return (
-                  <div key={`${index}-${leg.raceId}`} className="space-y-2">
-                  <div className="flex flex-wrap gap-2">
-                    {dayOrder.map((day) => (
-                      <Button
-                        key={`${index}-${day}`}
-                        type="button"
-                        size="sm"
-                        variant={selectedDay === day ? "default" : "outline"}
-                        onClick={() => {
-                          setQuickRacePicks((prev) => ({
-                            ...prev,
-                            [index]: { day, time: undefined },
-                          }))
-                        }}
-                      >
-                        {day.slice(0, 3)}
-                      </Button>
-                    ))}
-                  </div>
-                  {selectedDay ? (
-                    <div className="flex flex-wrap gap-2">
-                      {dayTimes.map((timeToken) => (
-                        <Button
-                          key={`${index}-${selectedDay}-${timeToken}`}
-                          type="button"
-                          size="sm"
-                          variant={selectedTime === timeToken ? "default" : "outline"}
-                          onClick={() => {
-                            const targetRace = dayRaces.find(
-                              (entry) => raceTimeLabel(entry.offTime) === timeToken,
-                            )
-                            if (!targetRace) {
-                              return
-                            }
-                            setLegRace(index, targetRace.id)
-                          }}
-                        >
-                          {timeToken}
-                        </Button>
-                      ))}
-                    </div>
-                  ) : null}
-                  <div className={`grid gap-2 ${draft.betType === "accumulator" ? "md:grid-cols-2" : "md:grid-cols-3"}`}>
-                    <div className="space-y-1">
-                      <Label htmlFor={`race-${index}`}>Race</Label>
-                      <select
-                        id={`race-${index}`}
-                        value={leg.raceId}
-                        className="native-select"
-                        onChange={(event) => setLegRace(index, event.target.value)}
-                      >
-                        <option value="">Select race</option>
-                        {racesSorted.map((entry) => (
-                          <option key={entry.id} value={entry.id}>
-                            {formatIso(entry.offTime, "EEE HH:mm")} - {entry.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+            {draft.betType !== "other" ? (
+              <div className="space-y-4">
+                {draft.legs.map((leg, index) => {
+                const race = raceMap.get(leg.raceId)
+                const quickPick = quickRacePicks[index]
+                const selectedDay = quickPick?.day ?? race?.day
+                const selectedTime = quickPick?.time ?? (race ? raceTimeLabel(race.offTime) : undefined)
+                const dayRaces = selectedDay ? racesByDay[selectedDay] : []
+                const dayTimes = [...new Set(dayRaces.map((entry) => raceTimeLabel(entry.offTime)))]
+                const horseOptions = (
+                  race?.runnersDetailed?.filter((runner) => !runner.nonRunner).map((runner) => runner.horseName) ??
+                  race?.runners ??
+                  []
+                )
+                  .slice()
+                  .sort((a, b) => a.localeCompare(b))
+                const datalistId = `runners-${index}`
 
-                    <div className="space-y-1">
-                      <Label htmlFor={`selection-${index}`}>Selection</Label>
-                      <select
-                        id={`selection-${index}`}
-                        className="native-select"
-                        value={leg.selectionName}
-                        disabled={!race}
-                        onChange={(event) => {
-                          const value = event.target.value
-                          const matchedRunner = race?.runnersDetailed?.find(
-                            (runner) =>
-                              !runner.nonRunner &&
-                              normalizeHorseName(runner.horseName) === normalizeHorseName(value),
-                          )
-                          const marketOdds = findMarketDecimalOdds(race, value, matchedRunner?.horseUid)
-                          setDraft((prev) => {
-                            const nextLegs = prev.legs.map((entry, entryIndex) =>
-                              entryIndex === index
-                                ? {
-                                    ...entry,
-                                    selectionName: value,
-                                    decimalOdds: marketOdds,
-                                    horseUid: matchedRunner?.horseUid,
-                                  }
-                                : entry,
-                            )
-                            return {
-                              ...prev,
-                              legs: nextLegs,
-                              oddsUsed:
-                                prev.betType === "accumulator" && !accaOddsManuallySet
-                                  ? computeAccumulatorDraftOdds(nextLegs)
-                                  : prev.oddsUsed,
-                            }
-                          })
-                        }}
-                      >
-                        <option value="">{race ? "Select horse" : "Pick race first"}</option>
-                        {horseOptions.map((horseName) => (
-                          <option key={`${datalistId}-${horseName}`} value={horseName}>
-                            {horseName}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {draft.betType !== "accumulator" ? (
-                      <div className="space-y-1">
-                        <Label htmlFor={`odds-${index}`}>Decimal Odds</Label>
-                        <Input
-                          id={`odds-${index}`}
-                          type="number"
-                          min={1}
-                          step={0.01}
-                          required
-                          value={leg.decimalOdds ?? ""}
-                          placeholder="Required"
-                          onChange={(event) => {
-                            const rawValue = event.target.value
-                            const value = rawValue === "" ? null : Number(rawValue)
-                            setDraft((prev) => ({
-                              ...prev,
-                              oddsUsed: value,
-                              legs: prev.legs.map((entry, entryIndex) =>
-                                entryIndex === index ? { ...entry, decimalOdds: value } : entry,
-                              ),
-                            }))
-                          }}
-                        />
+                  return (
+                    <div key={`${index}-${leg.raceId}`} className="space-y-3">
+                    {draft.betType === "accumulator" && draft.legs.length > 1 ? (
+                      <div className="flex items-center gap-2">
+                        <div className="flex h-5 w-5 items-center justify-center rounded-md bg-primary/15 text-[10px] font-bold text-primary">
+                          {index + 1}
+                        </div>
+                        <span className="text-xs font-medium text-muted-foreground">Leg {index + 1}</span>
+                        {draft.legs.length > 2 ? (
+                          <button
+                            type="button"
+                            className="ml-auto text-xs text-muted-foreground hover:text-destructive"
+                            onClick={() => {
+                              setDraft((prev) => ({
+                                ...prev,
+                                legs: prev.legs.filter((_, i) => i !== index),
+                              }))
+                            }}
+                          >
+                            Remove
+                          </button>
+                        ) : null}
                       </div>
                     ) : null}
-                  </div>
-                  {race?.lifecycle === "complete" ? (
-                    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-200">
-                      Warning: this race is complete. If a bet is accepted here, it will auto-resolve immediately using
-                      the stored result.
-                    </div>
-                  ) : null}
-                  {leg.selectionName.trim() && leg.decimalOdds === null ? (
-                    <div className="text-xs text-muted-foreground">
-                      No detected market odds for this selection yet.
-                      {draft.betType === "accumulator"
-                        ? " Add final accumulator odds manually."
-                        : " Enter your placed odds manually."}
-                    </div>
-                  ) : null}
-                  {race?.marketFavourite ? (
-                    <div className="rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
-                      Market favourite:{" "}
-                      <span className="font-medium text-foreground">{race.marketFavourite.horseName}</span>{" "}
-                      at {race.marketFavourite.bestFractional} ({formatOdds(race.marketFavourite.bestDecimal)})
-                      {race.oddsMeta?.importedAt ? ` • refreshed ${formatIso(race.oddsMeta.importedAt, "EEE HH:mm")}` : ""}
-                    </div>
-                  ) : null}
-                  </div>
-                )
-              })}
 
-              {draft.betType === "accumulator" ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setDraft((prev) => ({
-                      ...prev,
-                      oddsUsed: !accaOddsManuallySet ? null : prev.oddsUsed,
-                      legs: [
-                        ...prev.legs,
-                        { raceId: "", selectionName: "", decimalOdds: null, horseUid: undefined },
-                      ],
-                    }))
-                  }}
-                >
-                  Add Leg
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
+                    {/* Day quick picks */}
+                    <div className="flex flex-wrap gap-1.5">
+                      {dayOrder.map((day) => (
+                        <button
+                          key={`${index}-${day}`}
+                          type="button"
+                          className="quick-pick"
+                          data-active={selectedDay === day}
+                          onClick={() => {
+                            setQuickRacePicks((prev) => ({
+                              ...prev,
+                              [index]: { day, time: undefined },
+                            }))
+                          }}
+                        >
+                          {day.slice(0, 3)}
+                        </button>
+                      ))}
+                    </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
-            <div className="space-y-1">
-              <Label htmlFor="stake">Total Stake (£)</Label>
-              <Input
-                id="stake"
-                type="text"
-                inputMode="decimal"
-                value={stakeInput}
-                placeholder="5.00"
-                onChange={(event) => {
-                  const rawValue = event.target.value
-                  setStakeInput(rawValue)
-                  const parsed = Number(rawValue)
-                  if (rawValue !== "" && Number.isFinite(parsed)) {
-                    setDraft((prev) => ({
-                      ...prev,
-                      stakeTotal: parsed,
-                    }))
-                  }
-                }}
-                onBlur={() => {
-                  if (stakeInput.trim() === "") {
-                    return
-                  }
-                  const parsed = Number(stakeInput)
-                  if (Number.isFinite(parsed)) {
-                    setStakeInput(formatStakeInput(parsed))
-                  }
-                }}
-              />
-            </div>
+                    {/* Time quick picks */}
+                    {selectedDay ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {dayTimes.map((timeToken) => (
+                          <button
+                            key={`${index}-${selectedDay}-${timeToken}`}
+                            type="button"
+                            className="quick-pick"
+                            data-active={selectedTime === timeToken}
+                            onClick={() => {
+                              const targetRace = dayRaces.find(
+                                (entry) => raceTimeLabel(entry.offTime) === timeToken,
+                              )
+                              if (!targetRace) {
+                                return
+                              }
+                              setLegRace(index, targetRace.id)
+                            }}
+                          >
+                            {timeToken}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
 
-            {draft.betType === "accumulator" ? (
-              <div className="space-y-1 md:col-span-2">
-                <Label htmlFor="acca-odds">Final Accumulator Odds (Decimal)</Label>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <Input
-                    id="acca-odds"
-                    type="number"
-                    min={1}
-                    step={0.01}
-                    required
-                    value={draft.oddsUsed ?? ""}
-                    placeholder="Required"
-                    onChange={(event) => {
-                      const rawValue = event.target.value
-                      const value = rawValue === "" ? null : Number(rawValue)
-                      setAccaOddsManuallySet(true)
-                      setDraft((prev) => ({
-                        ...prev,
-                        oddsUsed: value,
-                      }))
-                    }}
-                  />
-                  <Button
+                    {/* Race + Selection + Odds row */}
+                    <div className={cn(
+                      "grid gap-3",
+                      draft.betType === "accumulator" ? "md:grid-cols-2" : "md:grid-cols-3",
+                    )}>
+                      <div className="space-y-1.5">
+                        <Label htmlFor={`race-${index}`} className="text-xs text-muted-foreground">Race</Label>
+                        <select
+                          id={`race-${index}`}
+                          value={leg.raceId}
+                          className="native-select"
+                          onChange={(event) => setLegRace(index, event.target.value)}
+                        >
+                          <option value="">Select race</option>
+                          {racesSorted.map((entry) => (
+                            <option key={entry.id} value={entry.id}>
+                              {formatIso(entry.offTime, "EEE HH:mm")} - {entry.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <Label htmlFor={`selection-${index}`} className="text-xs text-muted-foreground">Horse</Label>
+                        <select
+                          id={`selection-${index}`}
+                          className="native-select"
+                          value={leg.selectionName}
+                          disabled={!race}
+                          onChange={(event) => {
+                            const value = event.target.value
+                            const matchedRunner = race?.runnersDetailed?.find(
+                              (runner) =>
+                                !runner.nonRunner &&
+                                normalizeHorseName(runner.horseName) === normalizeHorseName(value),
+                            )
+                            const marketOdds = findMarketDecimalOdds(race, value, matchedRunner?.horseUid)
+                            setDraft((prev) => {
+                              const nextLegs = prev.legs.map((entry, entryIndex) =>
+                                entryIndex === index
+                                  ? {
+                                      ...entry,
+                                      selectionName: value,
+                                      decimalOdds: marketOdds,
+                                      horseUid: matchedRunner?.horseUid,
+                                    }
+                                  : entry,
+                              )
+                              return {
+                                ...prev,
+                                legs: nextLegs,
+                                oddsUsed:
+                                  prev.betType === "accumulator" && !accaOddsManuallySet
+                                    ? computeAccumulatorDraftOdds(nextLegs)
+                                    : prev.oddsUsed,
+                              }
+                            })
+                          }}
+                        >
+                          <option value="">{race ? "Select horse" : "Pick race first"}</option>
+                          {horseOptions.map((horseName) => (
+                            <option key={`${datalistId}-${horseName}`} value={horseName}>
+                              {horseName}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {draft.betType !== "accumulator" ? (
+                        <div className="space-y-1.5">
+                          <Label htmlFor={`odds-${index}`} className="text-xs text-muted-foreground">Decimal Odds</Label>
+                          <Input
+                            id={`odds-${index}`}
+                            type="number"
+                            min={1}
+                            step={0.01}
+                            required
+                            value={leg.decimalOdds ?? ""}
+                            placeholder="e.g. 4.50"
+                            onChange={(event) => {
+                              const rawValue = event.target.value
+                              const value = rawValue === "" ? null : Number(rawValue)
+                              setDraft((prev) => ({
+                                ...prev,
+                                oddsUsed: value,
+                                legs: prev.legs.map((entry, entryIndex) =>
+                                  entryIndex === index ? { ...entry, decimalOdds: value } : entry,
+                                ),
+                              }))
+                            }}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {/* Contextual info */}
+                    {race?.lifecycle === "complete" ? (
+                      <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                        <AlertCircle className="size-3.5 shrink-0" />
+                        This race is complete. Bets placed here will auto-resolve immediately.
+                      </div>
+                    ) : null}
+
+                    {leg.selectionName.trim() && leg.decimalOdds === null ? (
+                      <div className="text-xs text-muted-foreground">
+                        No market odds detected.
+                        {draft.betType === "accumulator"
+                          ? " Enter final acca odds manually below."
+                          : " Enter your placed odds manually."}
+                      </div>
+                    ) : null}
+
+                    {race?.marketFavourite ? (
+                      <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">
+                        <span>Fav:</span>
+                        <span className="font-medium text-foreground">{race.marketFavourite.horseName}</span>
+                        <span>{race.marketFavourite.bestFractional} ({formatOdds(race.marketFavourite.bestDecimal)})</span>
+                        {race.oddsMeta?.importedAt ? (
+                          <span className="ml-auto text-[10px]">{formatIso(race.oddsMeta.importedAt, "HH:mm")}</span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    </div>
+                  )
+                })}
+
+                {draft.betType === "accumulator" ? (
+                  <button
                     type="button"
-                    variant="outline"
+                    className="flex items-center gap-1.5 text-sm font-medium text-primary hover:text-primary/80"
                     onClick={() => {
-                      setAccaOddsManuallySet(false)
                       setDraft((prev) => ({
                         ...prev,
-                        oddsUsed: autoAccumulatorOdds,
+                        oddsUsed: !accaOddsManuallySet ? null : prev.oddsUsed,
+                        legs: [
+                          ...prev.legs,
+                          { raceId: "", selectionName: "", decimalOdds: null, horseUid: undefined },
+                        ],
                       }))
                     }}
                   >
-                    Use auto
-                  </Button>
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {isValidOdds(autoAccumulatorOdds)
-                    ? `Auto-computed from selections: ${formatOdds(autoAccumulatorOdds)}`
-                    : "Auto odds unavailable until all selection odds are detected."}
-                </div>
+                    <Plus className="size-4" />
+                    Add Leg
+                  </button>
+                ) : null}
               </div>
             ) : null}
 
-            {draft.betType === "each_way" ? (
-              <>
-                <div className="space-y-1">
-                  <Label htmlFor="places-paid">Places Paid</Label>
+            {/* Stake + Odds row */}
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="stake" className="text-xs text-muted-foreground">Stake</Label>
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">£</span>
                   <Input
-                    id="places-paid"
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={draft.ewTerms?.placesPaid ?? 3}
-                    onChange={(event) =>
-                      setDraft((prev) => ({
-                        ...prev,
-                        ewTerms: {
-                          placesPaid: Number(event.target.value),
-                          placeFraction: prev.ewTerms?.placeFraction ?? 0.2,
-                        },
-                      }))
-                    }
+                    id="stake"
+                    type="text"
+                    inputMode="decimal"
+                    className="pl-7"
+                    value={stakeInput}
+                    placeholder="5.00"
+                    onChange={(event) => {
+                      const rawValue = event.target.value
+                      setStakeInput(rawValue)
+                      const parsed = Number(rawValue)
+                      if (rawValue !== "" && Number.isFinite(parsed)) {
+                        setDraft((prev) => ({
+                          ...prev,
+                          stakeTotal: parsed,
+                        }))
+                      }
+                    }}
+                    onBlur={() => {
+                      if (stakeInput.trim() === "") {
+                        return
+                      }
+                      const parsed = Number(stakeInput)
+                      if (Number.isFinite(parsed)) {
+                        setStakeInput(formatStakeInput(parsed))
+                      }
+                    }}
                   />
                 </div>
-                <div className="space-y-1">
-                  <Label htmlFor="place-fraction">Place Fraction (e.g 0.2)</Label>
-                  <Input
-                    id="place-fraction"
-                    type="number"
-                    min={0.01}
-                    max={1}
-                    step={0.01}
-                    value={draft.ewTerms?.placeFraction ?? 0.2}
-                    onChange={(event) =>
-                      setDraft((prev) => ({
-                        ...prev,
-                        ewTerms: {
-                          placesPaid: prev.ewTerms?.placesPaid ?? 3,
-                          placeFraction: Number(event.target.value),
-                        },
-                      }))
-                    }
-                  />
+              </div>
+
+              {draft.betType === "accumulator" ? (
+                <div className="space-y-1.5 md:col-span-2">
+                  <Label htmlFor="acca-odds" className="text-xs text-muted-foreground">Final Acca Odds (Decimal)</Label>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Input
+                      id="acca-odds"
+                      type="number"
+                      min={1}
+                      step={0.01}
+                      required
+                      value={draft.oddsUsed ?? ""}
+                      placeholder="e.g. 25.00"
+                      onChange={(event) => {
+                        const rawValue = event.target.value
+                        const value = rawValue === "" ? null : Number(rawValue)
+                        setAccaOddsManuallySet(true)
+                        setDraft((prev) => ({
+                          ...prev,
+                          oddsUsed: value,
+                        }))
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setAccaOddsManuallySet(false)
+                        setDraft((prev) => ({
+                          ...prev,
+                          oddsUsed: autoAccumulatorOdds,
+                        }))
+                      }}
+                    >
+                      Auto
+                    </Button>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {isValidOdds(autoAccumulatorOdds)
+                      ? `Computed from selections: ${formatOdds(autoAccumulatorOdds)}`
+                      : "Select all horses to auto-compute."}
+                  </div>
                 </div>
-              </>
-            ) : null}
-          </div>
+              ) : null}
 
-          {actionError ? <div className="text-sm text-destructive">{actionError}</div> : null}
+              {draft.betType === "each_way" ? (
+                <>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="places-paid" className="text-xs text-muted-foreground">Places Paid</Label>
+                    <Input
+                      id="places-paid"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={draft.ewTerms?.placesPaid ?? 3}
+                      onChange={(event) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          ewTerms: {
+                            placesPaid: Number(event.target.value),
+                            placeFraction: prev.ewTerms?.placeFraction ?? 0.2,
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="place-fraction" className="text-xs text-muted-foreground">Place Fraction</Label>
+                    <Input
+                      id="place-fraction"
+                      type="number"
+                      min={0.01}
+                      max={1}
+                      step={0.01}
+                      value={draft.ewTerms?.placeFraction ?? 0.2}
+                      onChange={(event) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          ewTerms: {
+                            placesPaid: prev.ewTerms?.placesPaid ?? 3,
+                            placeFraction: Number(event.target.value),
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                </>
+              ) : null}
+            </div>
 
-          <div className="flex flex-wrap gap-2">
-            <Button type="submit" disabled={submitting || hasMissingOdds || hasMissingOtherName}>
-              {editingBetId ? "Update Bet" : "Place Bet"}
-            </Button>
-            {hasMissingOdds ? (
-              <div className="self-center text-xs text-muted-foreground">
-                {draft.betType === "accumulator"
-                  ? "Final accumulator decimal odds are required."
-                  : "Decimal odds are required."}
+            {/* Potential win callout */}
+            {potentialWinDisplay && potentialWinDisplay.win > 0 ? (
+              <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+                <div className="flex items-baseline justify-between">
+                  <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Potential Win
+                  </span>
+                  <span className="text-lg font-bold text-primary">
+                    {formatCurrency(potentialWinDisplay.win)}
+                  </span>
+                </div>
+                {potentialWinDisplay.place !== null ? (
+                  <div className="mt-1 flex items-baseline justify-between">
+                    <span className="text-[11px] text-muted-foreground">Place only</span>
+                    <span className="text-sm font-semibold text-muted-foreground">
+                      {formatCurrency(potentialWinDisplay.place)}
+                    </span>
+                  </div>
+                ) : null}
               </div>
             ) : null}
-            {hasMissingOtherName ? (
-              <div className="self-center text-xs text-muted-foreground">Bet name is required for other bets.</div>
+
+            {actionError ? (
+              <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                <AlertCircle className="size-4 shrink-0" />
+                {actionError}
+              </div>
             ) : null}
-            {editingBetId ? (
+
+            {/* Submit row */}
+            <div className="flex items-center gap-3">
               <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  resetDraft(selectedUserId)
-                }}
+                type="submit"
+                disabled={submitting || hasMissingOdds || hasMissingOtherName}
+                className="min-w-[120px]"
               >
-                Cancel Edit
+                {submitting ? "Saving..." : editingBetId ? "Update Bet" : "Place Bet"}
               </Button>
-            ) : null}
-          </div>
-        </form>
+              {editingBetId ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => resetDraft(selectedUserId)}
+                >
+                  Cancel
+                </Button>
+              ) : null}
+              {hasMissingOdds && !actionError ? (
+                <span className="text-xs text-muted-foreground">
+                  {draft.betType === "accumulator" ? "Final odds required" : "Odds required"}
+                </span>
+              ) : null}
+              {hasMissingOtherName && !actionError ? (
+                <span className="text-xs text-muted-foreground">Bet name required</span>
+              ) : null}
+            </div>
+          </form>
+        </CardContent>
+      </Card>
 
-        <div className="space-y-2">
-          <div className="text-sm font-medium">Recent Bets</div>
-          {currentOpenBets.length === 0 ? (
-            <div className="text-sm text-muted-foreground">No bets yet.</div>
-          ) : (
-            <div className="space-y-2">
-              {currentOpenBets.map((bet) => {
-                const oddsUsed = resolveBetOddsUsed(bet)
-                const potentialReturn = calculateBetPotentialReturn(bet)
-                const potentialWin = Math.max(0, potentialReturn - bet.stakeTotal)
-                const betLabel =
-                  bet.betType === "other"
-                    ? (bet.betName?.trim() || "Other bet")
-                    : bet.legs.map((leg) => leg.selectionName).join(" + ")
+      {/* Recent Bets */}
+      {currentOpenBets.length > 0 ? (
+        <Card className="shadow-xs">
+          <CardHeader>
+            <CardTitle className="text-sm font-semibold">Recent Bets</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {currentOpenBets.map((bet) => {
+              const oddsUsed = resolveBetOddsUsed(bet)
+              const potentialReturn = calculateBetPotentialReturn(bet)
+              const potentialWin = Math.max(0, potentialReturn - bet.stakeTotal)
+              const betLabel =
+                bet.betType === "other"
+                  ? (bet.betName?.trim() || "Other bet")
+                  : bet.legs.map((leg) => leg.selectionName).join(" + ")
 
-                return (
-                  <div key={bet.id} className="panel-subtle text-sm">
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <div className="font-medium">{betLabel}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {bet.betType} • odds {oddsUsed ? formatOdds(oddsUsed) : "N/A"} • stake{" "}
-                          {formatCurrency(bet.stakeTotal)} • potential win {formatCurrency(potentialWin)}
-                        </div>
-                        {bet.betType === "other" ? (
-                          <div className="text-xs text-muted-foreground">manual resolve in My Summary</div>
-                        ) : (
-                          <div className="text-xs text-muted-foreground">lock {formatIso(bet.lockAt, "EEE HH:mm")}</div>
-                        )}
+              return (
+                <div key={bet.id} className="bet-card">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-semibold">{betLabel}</span>
+                        <StatusBadge status={bet.status} />
                       </div>
-                      <Badge variant={bet.status === "settled" ? "default" : "secondary"}>{bet.status}</Badge>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                        <span>{bet.betType}</span>
+                        <span>{formatCurrency(bet.stakeTotal)}</span>
+                        {oddsUsed ? <span>@ {formatOdds(oddsUsed)}</span> : null}
+                        <ChevronRight className="size-3" />
+                        <span className="font-medium text-foreground">{formatCurrency(potentialWin)}</span>
+                      </div>
+                      {bet.betType === "other" ? (
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">Settle from My Bets</div>
+                      ) : (
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">
+                          Locks {formatIso(bet.lockAt, "EEE HH:mm")}
+                        </div>
+                      )}
                     </div>
-                    <div className="mt-2 flex gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => hydrateFromBet(bet)}>
-                        Edit
-                      </Button>
-                      <Button
+                    <div className="flex gap-1">
+                      <button
                         type="button"
-                        size="sm"
-                        variant="destructive"
+                        className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground"
+                        onClick={() => hydrateFromBet(bet)}
+                        title="Edit"
+                      >
+                        <Pencil className="size-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
                         onClick={async () => {
                           setActionError(null)
                           try {
@@ -766,17 +892,18 @@ export function BetPanel({
                             )
                           }
                         }}
+                        title="Delete"
                       >
-                        Delete
-                      </Button>
+                        <Trash2 className="size-3.5" />
+                      </button>
                     </div>
                   </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+                </div>
+              )
+            })}
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
   )
 }

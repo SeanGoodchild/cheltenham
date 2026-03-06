@@ -47,39 +47,43 @@ body {
     --sidebar-accent-foreground: oklch(0.21 0.034 264.665);
     --sidebar-border: oklch(0.928 0.006 264.531);
     --sidebar-ring: oklch(0.707 0.022 261.325);
+    --gold: oklch(0.80 0.14 85);
+    --gold-foreground: oklch(0.25 0.05 70);
   }
   .dark {
-    --background: oklch(0.13 0.028 261.692);
-    --foreground: oklch(0.985 0.002 247.839);
-    --card: oklch(0.21 0.034 264.665);
-    --card-foreground: oklch(0.985 0.002 247.839);
-    --popover: oklch(0.21 0.034 264.665);
-    --popover-foreground: oklch(0.985 0.002 247.839);
-    --primary: oklch(0.70 0.15 162);
-    --primary-foreground: oklch(0.26 0.05 173);
-    --secondary: oklch(0.274 0.006 286.033);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.278 0.033 256.848);
-    --muted-foreground: oklch(0.707 0.022 261.325);
-    --accent: oklch(0.278 0.033 256.848);
-    --accent-foreground: oklch(0.985 0.002 247.839);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.551 0.027 264.364);
+    --background: oklch(0.14 0.02 265);
+    --foreground: oklch(0.93 0.005 250);
+    --card: oklch(0.19 0.025 264);
+    --card-foreground: oklch(0.93 0.005 250);
+    --popover: oklch(0.19 0.025 264);
+    --popover-foreground: oklch(0.93 0.005 250);
+    --primary: oklch(0.72 0.16 162);
+    --primary-foreground: oklch(0.20 0.06 170);
+    --secondary: oklch(0.24 0.01 268);
+    --secondary-foreground: oklch(0.93 0 0);
+    --muted: oklch(0.24 0.02 260);
+    --muted-foreground: oklch(0.62 0.02 262);
+    --accent: oklch(0.24 0.02 260);
+    --accent-foreground: oklch(0.93 0.005 250);
+    --destructive: oklch(0.68 0.20 25);
+    --border: oklch(1 0 0 / 8%);
+    --input: oklch(1 0 0 / 10%);
+    --ring: oklch(0.55 0.03 264);
     --chart-1: oklch(0.85 0.13 165);
     --chart-2: oklch(0.77 0.15 163);
     --chart-3: oklch(0.70 0.15 162);
     --chart-4: oklch(0.60 0.13 163);
     --chart-5: oklch(0.51 0.10 166);
-    --sidebar: oklch(0.21 0.034 264.665);
-    --sidebar-foreground: oklch(0.985 0.002 247.839);
+    --sidebar: oklch(0.17 0.025 264);
+    --sidebar-foreground: oklch(0.93 0.005 250);
     --sidebar-primary: oklch(0.77 0.15 163);
     --sidebar-primary-foreground: oklch(0.26 0.05 173);
     --sidebar-accent: oklch(0.278 0.033 256.848);
     --sidebar-accent-foreground: oklch(0.985 0.002 247.839);
-    --sidebar-border: oklch(1 0 0 / 10%);
+    --sidebar-border: oklch(1 0 0 / 8%);
     --sidebar-ring: oklch(0.551 0.027 264.364);
+    --gold: oklch(0.82 0.15 85);
+    --gold-foreground: oklch(0.20 0.05 80);
   }
   .theme {
     --font-sans: 'Inter Variable', sans-serif;
@@ -88,24 +92,35 @@ body {
     @apply border-border;
   }
   body {
-    @apply font-sans bg-background text-foreground;
+    @apply font-sans bg-background text-foreground antialiased;
   }
   html {
     @apply font-sans;
+    -webkit-tap-highlight-color: transparent;
   }
 }
 
 @layer components {
   .native-select {
-    @apply h-9 w-full rounded-md border border-input bg-background px-2.5 py-2 text-sm text-foreground shadow-sm outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50;
+    @apply h-10 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-all focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 0.5rem center;
+    background-repeat: no-repeat;
+    background-size: 1.25rem 1.25rem;
+    padding-right: 2rem;
   }
 
   .panel-subtle {
-    @apply rounded-lg border border-border/80 bg-muted/30 p-3;
+    @apply rounded-xl border border-border/60 bg-muted/20 p-3;
+  }
+
+  .glass-panel {
+    @apply rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 backdrop-blur-sm;
   }
 
   .data-table-shell {
-    @apply overflow-x-auto rounded-lg border border-border/80 bg-background;
+    @apply overflow-x-auto rounded-xl border border-border/60 bg-card/50;
   }
 
   .data-table {
@@ -113,22 +128,120 @@ body {
   }
 
   .data-table thead {
-    @apply bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground;
+    @apply bg-muted/30 text-left text-[11px] uppercase tracking-wider text-muted-foreground;
   }
 
   .data-table th {
-    @apply px-3 py-2 font-medium;
+    @apply px-3 py-2.5 font-medium;
   }
 
   .data-table td {
-    @apply px-3 py-2;
+    @apply px-3 py-2.5;
   }
 
   .data-table tbody tr {
-    @apply border-t border-border/60;
+    @apply border-t border-border/40 transition-colors duration-150;
+  }
+
+  .data-table tbody tr:hover {
+    @apply bg-muted/20;
   }
 
   .data-table tbody tr:nth-child(even) {
-    @apply bg-muted/20;
+    @apply bg-muted/10;
+  }
+
+  .data-table tbody tr:nth-child(even):hover {
+    @apply bg-muted/25;
+  }
+
+  /* Stat card with subtle shine effect */
+  .stat-card {
+    @apply relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-muted/30 to-muted/10 p-3;
+  }
+
+  .stat-card::after {
+    content: '';
+    @apply pointer-events-none absolute inset-0 rounded-xl;
+    background: linear-gradient(135deg, rgba(255,255,255,0.03) 0%, transparent 50%);
+  }
+
+  /* Bet type chip selector */
+  .chip-group {
+    @apply flex gap-1.5;
+  }
+
+  .chip {
+    @apply relative flex h-9 cursor-pointer items-center justify-center rounded-lg border border-border/60 bg-muted/20 px-3.5 text-sm font-medium text-muted-foreground transition-all duration-200 select-none;
+  }
+
+  .chip:hover {
+    @apply border-border bg-muted/40 text-foreground;
+  }
+
+  .chip[data-active="true"] {
+    @apply border-primary/60 bg-primary/15 text-primary shadow-sm;
+  }
+
+  /* Quick pick day/time buttons */
+  .quick-pick {
+    @apply flex h-9 min-w-[3.25rem] cursor-pointer items-center justify-center rounded-lg border border-border/50 bg-card/60 px-3 text-sm font-medium text-muted-foreground transition-all duration-200 select-none;
+  }
+
+  .quick-pick:hover {
+    @apply border-border bg-muted/40 text-foreground;
+  }
+
+  .quick-pick[data-active="true"] {
+    @apply border-primary/60 bg-primary/15 text-primary;
+  }
+
+  /* Position badges for league table */
+  .position-badge {
+    @apply inline-flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold;
+  }
+
+  .position-badge[data-pos="1"] {
+    background: linear-gradient(135deg, oklch(0.82 0.15 85 / 0.25), oklch(0.75 0.12 70 / 0.15));
+    color: oklch(0.88 0.13 85);
+    border: 1px solid oklch(0.82 0.15 85 / 0.3);
+  }
+
+  .position-badge[data-pos="2"] {
+    background: linear-gradient(135deg, oklch(0.75 0.01 250 / 0.2), oklch(0.65 0.01 250 / 0.1));
+    color: oklch(0.80 0.01 250);
+    border: 1px solid oklch(0.75 0.01 250 / 0.25);
+  }
+
+  .position-badge[data-pos="3"] {
+    background: linear-gradient(135deg, oklch(0.65 0.10 55 / 0.2), oklch(0.55 0.08 55 / 0.1));
+    color: oklch(0.72 0.10 55);
+    border: 1px solid oklch(0.65 0.10 55 / 0.25);
+  }
+
+  /* Scrollbar styling */
+  .data-table-shell::-webkit-scrollbar {
+    height: 6px;
+  }
+
+  .data-table-shell::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  .data-table-shell::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-muted-foreground/20;
+  }
+
+  .data-table-shell::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/30;
+  }
+
+  /* Mobile card bet item */
+  .bet-card {
+    @apply rounded-xl border border-border/50 bg-card/60 p-3.5 transition-colors;
+  }
+
+  .bet-card:hover {
+    @apply bg-card/80;
   }
 }

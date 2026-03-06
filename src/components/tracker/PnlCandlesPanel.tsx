@@ -260,29 +260,29 @@ function CandleTooltip(props: {
   const changePrefix = change > 0 ? "+" : ""
 
   return (
-    <div className="max-w-[260px] rounded-md border border-border bg-background/95 px-3 py-2 text-xs shadow-xl backdrop-blur">
-      <div className="font-semibold">{point.label}</div>
-      <div className="mb-2 text-muted-foreground">{point.raceName}</div>
-      <div className="grid grid-cols-[auto_auto] gap-x-3 gap-y-1">
+    <div className="max-w-[240px] rounded-xl border border-border/60 bg-card px-3.5 py-2.5 text-xs shadow-2xl">
+      <div className="font-bold">{point.label}</div>
+      <div className="mb-2 text-[11px] text-muted-foreground">{point.raceName}</div>
+      <div className="grid grid-cols-[auto_auto] gap-x-4 gap-y-1">
         <span className="text-muted-foreground">Open</span>
-        <span className="text-right">{formatCurrency(point.open)}</span>
+        <span className="text-right tabular-nums">{formatCurrency(point.open)}</span>
         <span className="text-muted-foreground">Close</span>
-        <span className="text-right">{formatCurrency(point.close)}</span>
+        <span className="text-right tabular-nums">{formatCurrency(point.close)}</span>
         <span className="text-muted-foreground">Change</span>
-        <span className={`text-right ${changeClass}`}>
+        <span className={`text-right tabular-nums font-semibold ${changeClass}`}>
           {changePrefix}
           {formatCurrency(change)}
         </span>
-        <span className="text-muted-foreground">High / Low</span>
-        <span className="text-right">
-          {formatCurrency(point.high)} / {formatCurrency(point.low)}
+        <span className="text-muted-foreground">Range</span>
+        <span className="text-right tabular-nums">
+          {formatCurrency(point.low)} - {formatCurrency(point.high)}
         </span>
-        <span className="text-muted-foreground">{props.traceAYear} trace</span>
-        <span className="text-right">{formatCurrency(point.traceA)}</span>
+        <span className="text-muted-foreground">{props.traceAYear}</span>
+        <span className="text-right tabular-nums">{formatCurrency(point.traceA)}</span>
         {props.traceBYear !== props.traceAYear ? (
           <>
-            <span className="text-muted-foreground">{props.traceBYear} trace</span>
-            <span className="text-right">{formatCurrency(point.traceB)}</span>
+            <span className="text-muted-foreground">{props.traceBYear}</span>
+            <span className="text-right tabular-nums">{formatCurrency(point.traceB)}</span>
           </>
         ) : null}
       </div>
@@ -294,32 +294,65 @@ export function PnlCandlesPanel({ bets, races }: PnlCandlesPanelProps) {
   const candle = buildCandleData(races, bets)
 
   return (
-    <div className="panel-subtle">
-      <div className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Total P&L Candles</div>
+    <div className="rounded-xl border border-border/50 bg-muted/10 p-3.5">
+      {/* Header with legend */}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">P&L per Race</span>
+        {candle.points.length > 0 ? (
+          <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-2.5 w-2.5 rounded-sm bg-primary" />
+              Win
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-2.5 w-2.5 rounded-sm bg-destructive" />
+              Loss
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block h-px w-3 bg-muted-foreground/40" />
+              {candle.traceAYear}
+            </span>
+            {candle.traceBYear !== candle.traceAYear ? (
+              <span className="flex items-center gap-1">
+                <span className="inline-block h-px w-3 border-t border-dashed border-muted-foreground/30" />
+                {candle.traceBYear}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
       <div className="h-64 min-w-0">
         {candle.points.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            Candles appear as races are settled.
+            Chart appears as races are settled.
           </div>
         ) : (
           <div className="relative h-full min-w-0">
             <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={220}>
               <ComposedChart data={candle.points} margin={{ top: 12, right: 8, left: 8, bottom: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.4} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
+                  tickLine={false}
+                  axisLine={false}
+                />
                 <YAxis
-                  tick={{ fontSize: 11 }}
+                  tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
+                  tickLine={false}
+                  axisLine={false}
                   domain={[candle.yDomainMin, candle.yDomainMax]}
                   allowDataOverflow
                   tickFormatter={(value) => formatCurrency(Number(value) - candle.shiftOffset)}
                 />
                 <Tooltip
-                  cursor={{ stroke: "var(--primary)", strokeOpacity: 0.35, strokeWidth: 1.5 }}
+                  cursor={{ stroke: "var(--primary)", strokeOpacity: 0.25, strokeWidth: 1 }}
                   content={<CandleTooltip traceAYear={candle.traceAYear} traceBYear={candle.traceBYear} />}
                 />
 
-                <Bar dataKey="bodyBase" stackId="body" fill="transparent" barSize={12} isAnimationActive={false} />
-                <Bar dataKey="bodyRange" stackId="body" barSize={12} isAnimationActive={false}>
+                <Bar dataKey="bodyBase" stackId="body" fill="transparent" barSize={14} isAnimationActive={false} />
+                <Bar dataKey="bodyRange" stackId="body" barSize={14} isAnimationActive={false} radius={[2, 2, 2, 2]}>
                   {candle.points.map((entry) => (
                     <Cell
                       key={`body-${entry.label}`}
@@ -330,7 +363,7 @@ export function PnlCandlesPanel({ bets, races }: PnlCandlesPanelProps) {
                             ? "var(--destructive)"
                             : "var(--muted-foreground)"
                       }
-                      opacity={entry.bodyTone === "flat" ? 0.7 : 1}
+                      opacity={entry.bodyTone === "flat" ? 0.5 : 0.85}
                     />
                   ))}
                 </Bar>
