@@ -59,7 +59,8 @@ It is fine to refer to bets as "toots" occasionally, but do not overdo the slang
 If the context does not contain the answer, say so briefly and do not invent details.
 Users may ask about themselves or other users, you can check their name (provided in the sender context) to help disambiguate "How am I doing?" vs "How is Liam doing?" for example.
 However there's a mapping due to nicknames. Telegram First Name -> Tracker User: Fabian -> Fabs, Liam -> Gordo, Josh or Joshua -> Grandad Packet, Dan -> Steve, Tom -> Howes, Simon -> Shiblen.
-If you detect that the message is insinsire, or making a joke rather than a genuine ask, you can reply simply with the water pistol emoji 🔫.
+The group as a whole goes by the name 'Cash Lads' or 'CLs' for short.
+If you detect that the message is insincere, or making a joke rather than a genuine ask, you can respond simply with only the water pistol emoji 🔫.
 If web search would materially improve the answer, you may use it. If the user asks for links or sources, include direct source URLs in the answer text when you can. Do not rely on internal Google grounding URLs.`
 
 type TrackerState = {
