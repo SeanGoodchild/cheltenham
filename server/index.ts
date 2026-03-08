@@ -43,6 +43,11 @@ const SPORTING_LIFE_USER_AGENT =
 const SPORTING_LIFE_RACE_URLS_FILE = new URL("../public/race_urls.txt", import.meta.url)
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN?.trim() ?? ""
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID?.trim() ?? ""
+const TELEGRAM_WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET?.trim() ?? ""
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY?.trim() ?? ""
+const GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
+const GEMINI_RATE_LIMIT_MAX_REQUESTS = 20
+const GEMINI_RATE_LIMIT_WINDOW_MS = 60_000
 
 type TrackerState = {
   users: UserProfile[]
@@ -75,6 +80,46 @@ type ManualOtherSettleInput = {
 type TestRaceMessageInput = {
   raceId?: string
 }
+
+type TelegramSendMessageInput = {
+  chatId: string | number
+  text: string
+  replyToMessageId?: number
+}
+
+type TelegramWebhookUpdate = {
+  update_id?: number
+  message?: {
+    message_id?: number
+    text?: string
+    chat?: {
+      id?: number
+      type?: string
+      title?: string
+    }
+    from?: {
+      id?: number
+      is_bot?: boolean
+      username?: string
+    }
+  }
+}
+
+type GeminiGenerateContentResponse = {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string
+      }>
+    }
+    finishReason?: string
+  }>
+  promptFeedback?: {
+    blockReason?: string
+  }
+}
+
+const geminiRequestTimestamps: number[] = []
 
 type RaceImportSummary = {
   racesInserted: number
@@ -361,9 +406,9 @@ function pickRandom<T>(values: readonly T[]): T {
   return values[Math.floor(Math.random() * values.length)] as T
 }
 
-async function sendTelegramMessage(text: string): Promise<void> {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    throw new Error("Telegram not configured (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)")
+async function sendTelegramMessage(input: TelegramSendMessageInput): Promise<void> {
+  if (!TELEGRAM_BOT_TOKEN) {
+    throw new Error("Telegram not configured (missing TELEGRAM_BOT_TOKEN)")
   }
 
   const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -372,9 +417,10 @@ async function sendTelegramMessage(text: string): Promise<void> {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      chat_id: TELEGRAM_CHAT_ID,
-      text,
+      chat_id: input.chatId,
+      text: input.text,
       disable_web_page_preview: true,
+      reply_to_message_id: input.replyToMessageId,
     }),
   })
 
@@ -387,6 +433,150 @@ async function sendTelegramMessage(text: string): Promise<void> {
   if (!payload.ok) {
     throw new Error(`Telegram rejected message: ${payload.description ?? "unknown error"}`)
   }
+}
+
+async function sendTelegramNotificationMessage(text: string): Promise<void> {
+  if (!TELEGRAM_CHAT_ID) {
+    throw new Error("Telegram not configured (missing TELEGRAM_CHAT_ID)")
+  }
+
+  await sendTelegramMessage({
+    chatId: TELEGRAM_CHAT_ID,
+    text,
+  })
+}
+
+function trimTelegramReply(text: string): string {
+  const normalized = text.trim()
+  if (!normalized) {
+    return "No response."
+  }
+
+  if (normalized.length <= 4000) {
+    return normalized
+  }
+
+  return `${normalized.slice(0, 3997)}...`
+}
+
+function reserveGeminiRequestSlot(now = Date.now()): boolean {
+  while (
+    geminiRequestTimestamps.length > 0 &&
+    now - (geminiRequestTimestamps[0] ?? 0) >= GEMINI_RATE_LIMIT_WINDOW_MS
+  ) {
+    geminiRequestTimestamps.shift()
+  }
+
+  if (geminiRequestTimestamps.length >= GEMINI_RATE_LIMIT_MAX_REQUESTS) {
+    return false
+  }
+
+  geminiRequestTimestamps.push(now)
+  return true
+}
+
+async function generateGeminiReply(prompt: string): Promise<string> {
+  if (!GEMINI_API_KEY) {
+    throw new Error("Gemini not configured (missing GEMINI_API_KEY)")
+  }
+
+  if (!reserveGeminiRequestSlot()) {
+    throw new Error("Gemini rate limit exceeded")
+  }
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: prompt }],
+          },
+        ],
+      }),
+    },
+  )
+
+  const responseBody = await response.text()
+  if (!response.ok) {
+    throw new Error(`Gemini request failed (${response.status}): ${responseBody.slice(0, 300)}`)
+  }
+
+  const payload = JSON.parse(responseBody) as GeminiGenerateContentResponse
+  const reply =
+    payload.candidates
+      ?.flatMap((candidate) => candidate.content?.parts ?? [])
+      .map((part) => part.text?.trim() ?? "")
+      .filter(Boolean)
+      .join("\n")
+      .trim() ?? ""
+
+  if (!reply) {
+    const blockReason = payload.promptFeedback?.blockReason
+    if (blockReason) {
+      throw new Error(`Gemini blocked the prompt: ${blockReason}`)
+    }
+    throw new Error("Gemini returned an empty response")
+  }
+
+  return trimTelegramReply(reply)
+}
+
+async function handleTelegramWebhook(request: Request): Promise<Response> {
+  if (!TELEGRAM_BOT_TOKEN) {
+    return errorResponse("Telegram not configured (missing TELEGRAM_BOT_TOKEN)", 503)
+  }
+
+  if (!TELEGRAM_WEBHOOK_SECRET) {
+    return errorResponse("Telegram webhook not configured (missing TELEGRAM_WEBHOOK_SECRET)", 503)
+  }
+
+  const secret = request.headers.get("x-telegram-bot-api-secret-token")?.trim() ?? ""
+  if (secret !== TELEGRAM_WEBHOOK_SECRET) {
+    return errorResponse("Invalid Telegram webhook secret", 401)
+  }
+
+  const update = await parseJson<TelegramWebhookUpdate>(request)
+  const message = update.message
+  const chatId = message?.chat?.id
+  const messageId = message?.message_id
+  const text = message?.text?.trim() ?? ""
+
+  if (!chatId || !messageId) {
+    return jsonResponse({ ok: true, ignored: true, reason: "no_message" })
+  }
+
+  if (message.from?.is_bot) {
+    return jsonResponse({ ok: true, ignored: true, reason: "bot_message" })
+  }
+
+  if (!text) {
+    return jsonResponse({ ok: true, ignored: true, reason: "no_text" })
+  }
+
+  let replyText = ""
+  try {
+    replyText = await generateGeminiReply(text)
+  } catch (error) {
+    console.error("telegram webhook gemini reply failed", error)
+    replyText =
+      error instanceof Error && error.message === "Gemini rate limit exceeded"
+        ? "Too many requests just now. Try again in a minute."
+        : "Sorry, I couldn't generate a reply just now."
+  }
+
+  await sendTelegramMessage({
+    chatId,
+    text: replyText,
+    replyToMessageId: messageId,
+  })
+
+  return jsonResponse({ ok: true, replied: true, model: GEMINI_MODEL })
 }
 
 async function dispatchRaceResultTelegramNotification(
@@ -449,7 +639,7 @@ async function dispatchRaceResultTelegramNotification(
 ${leaderName} is leading the pack with a ${pickRandom(leaderDescriptions)} ${formatMoneyGBP(leaderProfit)} profit.`
 
   try {
-    await sendTelegramMessage(message)
+    await sendTelegramNotificationMessage(message)
     await notificationsCol(db)
       .doc(notificationId)
       .set(
@@ -2599,6 +2789,10 @@ export async function handleApiRequest(request: Request): Promise<Response> {
       const input = (await request.json().catch(() => ({}))) as TestRaceMessageInput
       const result = await sendTestRaceResultTelegram(input)
       return jsonResponse({ ok: result.status === "sent", result }, result.status === "sent" ? 200 : 502)
+    }
+
+    if (request.method === "POST" && pathname === "/api/telegram/webhook") {
+      return await handleTelegramWebhook(request)
     }
 
       const notFound = errorResponse("Not found", 404)

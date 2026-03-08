@@ -387,10 +387,10 @@ export function BetPanel({
             {editingBetId ? "Edit Bet" : "Have a toot"}
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-5">
-          <form className="space-y-5" onSubmit={handleSubmit}>
+        <CardContent>
+          <form className="space-y-4" onSubmit={handleSubmit}>
             {/* Bet type chip selector */}
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label className="text-[11px] uppercase tracking-wide text-muted-foreground">Bet Type</Label>
               <div className="chip-group">
                 {BET_TYPE_OPTIONS.map((option) => (

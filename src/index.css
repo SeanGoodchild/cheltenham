@@ -155,15 +155,8 @@ body {
     @apply bg-muted/25;
   }
 
-  /* Stat card with subtle shine effect */
   .stat-card {
-    @apply relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-muted/30 to-muted/10 p-3;
-  }
-
-  .stat-card::after {
-    content: '';
-    @apply pointer-events-none absolute inset-0 rounded-xl;
-    background: linear-gradient(135deg, rgba(255,255,255,0.03) 0%, transparent 50%);
+    @apply rounded-xl border border-border/50 bg-muted/20 p-3;
   }
 
   /* Bet type chip selector */

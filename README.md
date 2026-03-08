@@ -106,6 +106,7 @@ bun run dev:full
 - `POST /api/races/:id/import-lock`
 - `POST /api/notifications/daily-summary`
 - `POST /api/notifications/test-race-message`
+- `POST /api/telegram/webhook`
 
 ## Notes
 - Access/auth is still intentionally lightweight for your private group.
@@ -119,9 +120,15 @@ bun run dev:full
   - `APP_ORIGIN=https://cash-lads.vercel.app`
   - `FIREBASE_PROJECT_ID=rocketmill-octane`
   - `FIREBASE_SERVICE_ACCOUNT_JSON=<single-line service account JSON>`
+- Telegram/Gemini webhook env vars:
+  - `TELEGRAM_BOT_TOKEN`
+  - `TELEGRAM_CHAT_ID` (still used for outbound race notifications)
+  - `GEMINI_API_KEY`
+  - `TELEGRAM_WEBHOOK_SECRET`
 - Optional env vars:
   - `ODDS_IMPORT_TIMEOUT_MS`
   - `ODDS_IMPORT_CONCURRENCY`
   - `ODDS_IMPORT_USER_AGENT`
 - If `VITE_API_BASE_URL` is currently set to `http://localhost:3001` in Vercel, remove it.
 - Note: `/api/stream` (SSE) works via function streaming, but platform duration limits can still force reconnects in some environments.
+- `/api/telegram/webhook` accepts Telegram updates and replies with a one-off Gemini response for plain text group messages.

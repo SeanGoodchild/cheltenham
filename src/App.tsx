@@ -209,13 +209,11 @@ function UserSwitcher({
   selectedUserId,
   onSwitchUser,
   betCount,
-  compact = false,
 }: {
   users: UserProfile[]
   selectedUserId: string
   onSwitchUser: (value: string) => void
   betCount: number
-  compact?: boolean
 }) {
   const selectedUser = users.find((user) => user.id === selectedUserId)
   if (!selectedUser) {
@@ -226,24 +224,21 @@ function UserSwitcher({
     <DropdownMenu>
       <DropdownMenuTrigger
         className={cn(
-          "inline-flex items-center gap-2 rounded-xl border border-border/60 bg-card/70 text-left shadow-sm transition-colors hover:bg-muted/40",
-          compact ? "h-10 px-2.5" : "px-3 py-2",
+          "flex w-full items-center gap-2 rounded-xl border border-border/60 bg-card/70 px-3 py-2 text-left shadow-sm transition-colors hover:bg-muted/40",
         )}
       >
         <UserAvatar
           name={selectedUser.displayName}
           src={getUserAvatarSrc(selectedUser)}
-          size={compact ? "sm" : "lg"}
+          size="sm"
         />
-        {!compact ? (
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">{selectedUser.displayName}</div>
-            <div className="text-[11px] text-muted-foreground">{betCount} bets placed</div>
-          </div>
-        ) : null}
-        <ChevronDown className="size-3.5 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold">{selectedUser.displayName}</div>
+          <div className="text-[11px] text-muted-foreground">{betCount} bets placed</div>
+        </div>
+        <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64">
+      <DropdownMenuContent align="start" className="w-64">
         <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Swap lad</div>
         <DropdownMenuSeparator />
         {users.map((user) => {
@@ -565,7 +560,7 @@ export function App() {
         <aside className="hidden border-r border-border/60 bg-card/40 md:block">
           <div className="sticky top-0 flex h-screen flex-col px-4 py-5">
             {/* Brand */}
-            <div className="mb-6 space-y-1">
+            <div className="mb-4 space-y-1">
               <div className="text-[10px] font-medium uppercase tracking-[0.25em] text-muted-foreground">
                 Ca$h Lad$
               </div>
@@ -573,6 +568,15 @@ export function App() {
             </div>
 
             {/* User identity */}
+            <div className="mb-4">
+              <UserSwitcher
+                users={users}
+                selectedUserId={resolvedSelectedUserId}
+                onSwitchUser={handleSwitchUser}
+                betCount={selectedUserBetCount}
+              />
+            </div>
+
             {/* Nav tabs */}
             <nav className="space-y-1">
               {TABS.map((tab) => (
@@ -659,30 +663,13 @@ export function App() {
               <div className="min-w-0 text-center">
                 <div className="text-sm font-bold tracking-tight">Ca$h Lad$</div>
               </div>
-              <div className="shrink-0">
-                <UserSwitcher
-                  users={users}
-                  selectedUserId={resolvedSelectedUserId}
-                  onSwitchUser={handleSwitchUser}
-                  betCount={selectedUserBetCount}
-                  compact
-                />
-              </div>
+              <div className="w-9" />
             </div>
           </header>
 
           {/* Page content */}
           <main className="flex-1 px-4 pt-2.5 pb-20 md:px-6 md:py-5 md:pb-6">
             <div className="mx-auto w-full max-w-6xl space-y-3 md:space-y-4">
-              <div className="hidden justify-end md:flex">
-                <UserSwitcher
-                  users={users}
-                  selectedUserId={resolvedSelectedUserId}
-                  onSwitchUser={handleSwitchUser}
-                  betCount={selectedUserBetCount}
-                />
-              </div>
-
               {(error || actionError) && (
                 <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                   {error ?? actionError}
@@ -702,36 +689,36 @@ export function App() {
 
               {activeTab === "main-cashboard" ? (
                 <div className="space-y-3 md:space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-base font-bold">Cashboard</h2>
+                    <div className="inline-flex h-8 items-center rounded-lg border border-input bg-muted/20 p-1">
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-md px-3 py-0.5 text-sm transition-colors",
+                          mainBoardUserView.mode === "all"
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                        onClick={() => setMainBoardUserView({ mode: "all" })}
+                      >
+                        All
+                      </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded-md px-3 py-0.5 text-sm transition-colors",
+                          mainBoardUserView.mode === "me"
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                        onClick={() => setMainBoardUserView({ mode: "me" })}
+                      >
+                        Me
+                      </button>
+                    </div>
+                  </div>
                   <StatsCards
-                    title="Cashboard"
-                    headerRight={(
-                      <div className="inline-flex h-9 items-center rounded-lg border border-input bg-muted/20 p-1">
-                        <button
-                          type="button"
-                          className={cn(
-                            "rounded-md px-3 py-1 text-sm transition-colors",
-                            mainBoardUserView.mode === "all"
-                              ? "bg-background text-foreground shadow-sm"
-                              : "text-muted-foreground hover:text-foreground",
-                          )}
-                          onClick={() => setMainBoardUserView({ mode: "all" })}
-                        >
-                          All
-                        </button>
-                        <button
-                          type="button"
-                          className={cn(
-                            "rounded-md px-3 py-1 text-sm transition-colors",
-                            mainBoardUserView.mode === "me"
-                              ? "bg-background text-foreground shadow-sm"
-                              : "text-muted-foreground hover:text-foreground",
-                          )}
-                          onClick={() => setMainBoardUserView({ mode: "me" })}
-                        >
-                          Me
-                        </button>
-                      </div>
-                    )}
                     variant="hero"
                     stats={mainBoardGlobalStats}
                   />
@@ -791,6 +778,15 @@ export function App() {
               >
                 <X className="size-4" />
               </button>
+            </div>
+
+            <div className="mb-4">
+              <UserSwitcher
+                users={users}
+                selectedUserId={resolvedSelectedUserId}
+                onSwitchUser={handleSwitchUser}
+                betCount={selectedUserBetCount}
+              />
             </div>
 
             <nav className="space-y-1">

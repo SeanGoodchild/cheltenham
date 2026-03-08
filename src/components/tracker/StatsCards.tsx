@@ -17,7 +17,7 @@ import type { GlobalStats, UserStats } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 type StatsCardsProps = {
-  title: string
+  title?: string
   headerRight?: ReactNode
   variant: "hero" | "other"
   stats: Pick<
@@ -69,12 +69,14 @@ export function StatsCards({ title, headerRight, variant, stats }: StatsCardsPro
 
   return (
     <Card size="sm" className="h-full shadow-xs">
-      <CardHeader>
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <CardTitle className="text-base font-bold">{title}</CardTitle>
-          {headerRight}
-        </div>
-      </CardHeader>
+      {title ? (
+        <CardHeader>
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <CardTitle className="text-base font-bold">{title}</CardTitle>
+            {headerRight}
+          </div>
+        </CardHeader>
+      ) : null}
       <CardContent>
         {variant === "hero" ? (
           <div className="grid gap-2 md:grid-cols-3">
@@ -84,7 +86,7 @@ export function StatsCards({ title, headerRight, variant, stats }: StatsCardsPro
               return (
                 <div
                   key={config.key}
-                  className="rounded-xl border border-border/50 bg-gradient-to-br from-muted/30 via-muted/10 to-background p-3.5"
+                  className="rounded-xl border border-border/50 bg-muted/20 p-3.5"
                 >
                   <div className="flex items-center gap-2">
                     <Icon className="size-3.5 text-muted-foreground" />

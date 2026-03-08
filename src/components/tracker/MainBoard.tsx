@@ -324,14 +324,14 @@ function CurrentRaceCard({
               <Clock className="size-3.5 text-muted-foreground" />
               <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Next Race</span>
             </div>
-            <div className="mt-1.5 text-base font-bold">{currentRace.name}</div>
+            <div className="mt-1 text-base font-bold">{currentRace.name}</div>
             <div className="mt-0.5 text-sm text-muted-foreground">{formatIso(currentRace.offTime, "EEE HH:mm")}</div>
           </div>
-          <div className="flex flex-col items-end gap-1.5">
+          <div className="flex items-center gap-2">
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                className="flex h-8 w-8 items-center justify-center rounded-lg border border-border/50 text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-border/50 text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={() => {
                   if (!canGoPrevious) {
                     return
@@ -345,7 +345,7 @@ function CurrentRaceCard({
               </button>
               <button
                 type="button"
-                className="flex h-8 w-8 items-center justify-center rounded-lg border border-border/50 text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-border/50 text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={() => {
                   if (!canGoNext) {
                     return
@@ -363,8 +363,8 @@ function CurrentRaceCard({
           </div>
         </div>
         {currentRaceRange ? (
-          <div className="mt-3 rounded-lg border border-border/40 bg-muted/15 px-3 py-3">
-            <div className="grid gap-2 text-sm">
+          <div className="mt-3 rounded-lg border border-border/40 bg-muted/10 px-3 py-2.5">
+            <div className="grid gap-1.5 text-sm">
               <div className="flex items-center justify-between gap-3">
                 <span className="text-muted-foreground">{bestOutcomeLabel}</span>
                 <div className="text-right">
