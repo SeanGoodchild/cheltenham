@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
-import { Check, ChevronDown, Clock, Menu, RefreshCw, Shield, Trophy, UserRound, Wallet, X } from "lucide-react"
+import { Check, ChevronDown, Clock, Menu, Trophy, UserRound, Wallet, X } from "lucide-react"
 
-import { AdminPanel } from "@/components/tracker/AdminPanel"
 import { BetPanel, type BetDraftForm } from "@/components/tracker/BetPanel"
 import { MainBoard } from "@/components/tracker/MainBoard"
 import { PersonalPanel } from "@/components/tracker/PersonalPanel"
@@ -15,7 +14,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 // Card removed -- errors use inline div now
 import {
@@ -29,18 +27,11 @@ import { Label } from "@/components/ui/label"
 import { useTrackerData } from "@/hooks/useTrackerData"
 import {
   createBet,
-  generateRaceSimulation,
-  getRaceSimulationInfo,
-  getTrackerMode,
   getLastRaceImportRun,
   refreshRaceData,
   resolveOtherBetManually,
   removeBet,
-  setTrackerMode,
-  settleRace,
-  type TrackerMode,
   updateBet,
-  updateRaceResult,
 } from "@/lib/firebase"
 import { getStoredOddsFormat, persistOddsFormat, type OddsFormat } from "@/lib/format"
 import { buildRaceOutcomeRanges, computeGlobalStats, computeUserStats } from "@/lib/settlement"
@@ -87,16 +78,6 @@ function toBetDraft(form: BetDraftForm) {
       decimalOdds: leg.decimalOdds ?? null,
     })),
   }
-}
-
-function formatLastRefreshed(run: RaceImportRun | null): string {
-  if (!run) {
-    return "Never"
-  }
-  if (run.completedAt) {
-    return `${formatIso(run.completedAt, "EEE d MMM HH:mm")} (${run.status})`
-  }
-  return `${formatIso(run.startedAt, "EEE d MMM HH:mm")} (${run.status})`
 }
 
 function formatCountdown(msUntil: number): string {
@@ -285,8 +266,7 @@ function UserSwitcher({
 }
 
 export function App() {
-  const [trackerMode, setTrackerModeState] = useState<TrackerMode>(() => getTrackerMode())
-  const { users, races, bets, userStats, globalStats, error, bootstrapping } = useTrackerData(trackerMode)
+  const { users, races, bets, userStats, globalStats, error, bootstrapping } = useTrackerData()
   const [selectedUserId, setSelectedUserId] = useState<string>(() => {
     if (typeof window === "undefined") {
       return ""
@@ -298,22 +278,14 @@ export function App() {
   const [raceImportRun, setRaceImportRun] = useState<RaceImportRun | null>(null)
   const [refreshingRaceData, setRefreshingRaceData] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const [adminOpen, setAdminOpen] = useState(false)
   const [identityDraftUserId, setIdentityDraftUserId] = useState("")
   const [mainBoardUserView, setMainBoardUserView] = useState<MainBoardUserView>({ mode: "all" })
   const [oddsFormat, setOddsFormat] = useState<OddsFormat>(() => getStoredOddsFormat())
-  const [simulatingRaces, setSimulatingRaces] = useState(false)
   const [nowTickMs, setNowTickMs] = useState(() => Date.now())
   const [isPageVisible, setIsPageVisible] = useState(() =>
     typeof document === "undefined" ? true : document.visibilityState === "visible",
   )
   const raceImportRunRef = useRef<RaceImportRun | null>(null)
-  const [simulationInfo, setSimulationInfo] = useState<{
-    generatedAt?: string
-    runId?: string
-    seed?: string
-    racesSimulated: number
-  } | null>(null)
 
   const derivedUserStats = useMemo(() => {
     if (userStats.length > 0) {
@@ -333,7 +305,6 @@ export function App() {
   const resolvedSelectedUserId = hasValidSelectedUser ? selectedUserId : ""
   const identityGateOpen = !bootstrapping && users.length > 0 && !hasValidSelectedUser
   const selectedSummaryUser = users.find((user) => user.id === resolvedSelectedUserId)
-  const selectedUserDisplayName = selectedSummaryUser?.displayName ?? ""
   const isGordoUltraDark = resolvedSelectedUserId === "gordo"
   const selectedUserBetCount = useMemo(
     () => bets.filter((bet) => bet.userId === resolvedSelectedUserId).length,
@@ -368,9 +339,6 @@ export function App() {
     () => buildRaceOutcomeRanges(races, mainBoardBets),
     [mainBoardBets, races],
   )
-  const activeTabMeta = TABS.find((tab) => tab.id === activeTab) ?? TABS[0]
-  const lastRefreshedLabel = formatLastRefreshed(raceImportRun)
-  const effectiveSelectedUserId = resolvedSelectedUserId || identityDraftUserId || users[0]?.id || ""
   const nextRaceInfo = useMemo(() => {
     const nextRace = races
       .filter((race) => new Date(race.offTime).getTime() > nowTickMs)
@@ -420,18 +388,7 @@ export function App() {
     await resolveOtherBetManually(input)
   }
 
-  async function handleUpdateRaceResult(input: { raceId: string; winner?: string; placed: string[] }) {
-    await updateRaceResult(input)
-  }
-
-  async function handleSettleRace(raceId: string) {
-    await settleRace(raceId)
-  }
-
-  async function runRaceRefresh(options?: { clearError?: boolean }) {
-    if (options?.clearError) {
-      setActionError(null)
-    }
+  async function runRaceRefresh() {
     setRefreshingRaceData(true)
     try {
       const payload = await refreshRaceData()
@@ -445,45 +402,6 @@ export function App() {
     }
   }
 
-  async function handleRefreshRaceData() {
-    await runRaceRefresh({ clearError: true })
-  }
-
-  async function handleGenerateSimulation() {
-    setActionError(null)
-    setSimulatingRaces(true)
-    try {
-      const result = await generateRaceSimulation()
-      setSimulationInfo({
-        generatedAt: result.generatedAt,
-        runId: result.runId,
-        seed: result.seed,
-        racesSimulated: result.racesSimulated,
-      })
-      if (trackerMode !== "simulated") {
-        setTrackerMode("simulated")
-        setTrackerModeState("simulated")
-      } else {
-        setTrackerMode("simulated", { forceReconnect: true })
-      }
-    } catch (simulationError) {
-      setActionError(simulationError instanceof Error ? simulationError.message : "Failed to simulate races")
-    } finally {
-      setSimulatingRaces(false)
-    }
-  }
-
-  function handleToggleTrackerMode(nextMode: TrackerMode) {
-    setActionError(null)
-    setTrackerMode(nextMode)
-    setTrackerModeState(nextMode)
-  }
-
-  function openAdminPanel() {
-    setMobileMenuOpen(false)
-    setAdminOpen(true)
-  }
-
   function handleOddsFormatChange(nextFormat: OddsFormat) {
     setOddsFormat(nextFormat)
     persistOddsFormat(nextFormat)
@@ -493,10 +411,9 @@ export function App() {
     if (bootstrapping) {
       return
     }
-    void Promise.all([getLastRaceImportRun(), getRaceSimulationInfo()])
-      .then(([run, info]) => {
+    void getLastRaceImportRun()
+      .then((run) => {
         setRaceImportRun(run)
-        setSimulationInfo(info)
       })
       .catch(() => {
         // non-fatal for initial render
@@ -546,7 +463,7 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (bootstrapping || trackerMode !== "live" || !isPageVisible || refreshingRaceData) {
+    if (bootstrapping || !isPageVisible || refreshingRaceData) {
       return
     }
 
@@ -627,7 +544,6 @@ export function App() {
     isPageVisible,
     races,
     refreshingRaceData,
-    trackerMode,
   ])
 
   // --- Loading state ---
@@ -636,7 +552,7 @@ export function App() {
       <main className="flex min-h-screen items-center justify-center p-4">
         <div className="text-center">
           <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
-          <div className="text-sm font-medium text-muted-foreground">Loading the tracker...</div>
+          <div className="text-sm font-medium text-muted-foreground">Compiling Toots...</div>
         </div>
       </main>
     )
@@ -651,9 +567,9 @@ export function App() {
             {/* Brand */}
             <div className="mb-6 space-y-1">
               <div className="text-[10px] font-medium uppercase tracking-[0.25em] text-muted-foreground">
-                Cheltenham 2026
+                Ca$h Lad$
               </div>
-              <h1 className="text-xl font-bold tracking-tight">Ca$h Lad$</h1>
+              <h1 className="text-xl font-bold tracking-tight">Cheltenham 2026</h1>
             </div>
 
             {/* User identity */}
@@ -691,7 +607,6 @@ export function App() {
             {/* Spacer */}
             <div className="flex-1" />
 
-            {/* Admin */}
             <div className="space-y-2">
               <div className="rounded-xl border border-border/50 bg-muted/10 p-2">
                 <div className="mb-2 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -724,17 +639,6 @@ export function App() {
                   </button>
                 </div>
               </div>
-              {trackerMode === "simulated" ? (
-                <Badge variant="outline" className="w-full justify-center">Simulated Mode</Badge>
-              ) : null}
-              <button
-                type="button"
-                className="flex w-full items-center gap-2.5 rounded-lg border border-border/50 bg-muted/10 px-3 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground"
-                onClick={openAdminPanel}
-              >
-                <Shield className="size-4" />
-                Admin Panel
-              </button>
             </div>
           </div>
         </aside>
@@ -765,21 +669,12 @@ export function App() {
                 />
               </div>
             </div>
-            {trackerMode === "simulated" ? (
-              <div className="mt-1.5 text-center">
-                <Badge variant="outline" className="text-[10px]">Simulated Mode</Badge>
-              </div>
-            ) : null}
           </header>
 
           {/* Page content */}
-          <main className="flex-1 px-4 py-4 pb-24 md:px-6 md:py-5 md:pb-6">
-            <div className="mx-auto w-full max-w-5xl space-y-4">
-              {/* Desktop page header */}
-              <div className="hidden items-center justify-between md:flex">
-                <div>
-                  <h2 className="text-lg font-bold tracking-tight">{activeTabMeta.label}</h2>
-                </div>
+          <main className="flex-1 px-4 pt-2.5 pb-20 md:px-6 md:py-5 md:pb-6">
+            <div className="mx-auto w-full max-w-6xl space-y-3 md:space-y-4">
+              <div className="hidden justify-end md:flex">
                 <UserSwitcher
                   users={users}
                   selectedUserId={resolvedSelectedUserId}
@@ -806,10 +701,9 @@ export function App() {
               ) : null}
 
               {activeTab === "main-cashboard" ? (
-                <div className="space-y-4">
+                <div className="space-y-3 md:space-y-4">
                   <StatsCards
                     title="Cashboard"
-                    middleContent={<PnlCandlesPanel raceRanges={mainBoardRaceRanges} />}
                     headerRight={(
                       <div className="inline-flex h-9 items-center rounded-lg border border-input bg-muted/20 p-1">
                         <button
@@ -838,15 +732,23 @@ export function App() {
                         </button>
                       </div>
                     )}
+                    variant="hero"
                     stats={mainBoardGlobalStats}
                   />
+                  <PnlCandlesPanel raceRanges={mainBoardRaceRanges} />
                   <MainBoard
                     bets={mainBoardBets}
                     users={mainBoardUsers}
                     races={races}
                     stats={mainBoardStats}
                     raceRanges={mainBoardRaceRanges}
-                    outcomeScopeLabel={isMainBoardMeView ? "For Me" : "For The CLs"}
+                    bestOutcomeLabel={isMainBoardMeView ? "Best personal outcome" : "Best CL outcome"}
+                    worstOutcomeLabel={isMainBoardMeView ? "Worst personal outcome" : "Worst CL outcome"}
+                  />
+                  <StatsCards
+                    title="Other Stats"
+                    variant="other"
+                    stats={mainBoardGlobalStats}
                   />
                 </div>
               ) : null}
@@ -877,9 +779,9 @@ export function App() {
             <div className="mb-5 flex items-center justify-between">
               <div>
                 <div className="text-[10px] font-medium uppercase tracking-[0.25em] text-muted-foreground">
-                  Cheltenham 2026
+                  Ca$h Lad$
                 </div>
-                <div className="text-base font-bold tracking-tight">Ca$h Lad$</div>
+                <div className="text-base font-bold tracking-tight">Cheltenham 2026</div>
               </div>
               <button
                 type="button"
@@ -958,17 +860,6 @@ export function App() {
                   </button>
                 </div>
               </div>
-              {trackerMode === "simulated" ? (
-                <Badge variant="outline" className="w-full justify-center">Simulated Mode</Badge>
-              ) : null}
-              <button
-                type="button"
-                className="flex w-full items-center gap-2.5 rounded-lg border border-border/50 bg-muted/10 px-3 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground"
-                onClick={openAdminPanel}
-              >
-                <Shield className="size-4" />
-                Admin Panel
-              </button>
             </div>
           </aside>
         </div>
@@ -1010,7 +901,7 @@ export function App() {
           <AlertDialogHeader>
             <AlertDialogTitle className="text-center text-xl">Welcome, lad</AlertDialogTitle>
             <AlertDialogDescription className="text-center">
-              Pick your name to get started. You can change this any time from the admin panel.
+              Pick your name to get started. You can change this any time from the avatar switcher.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-2">
@@ -1048,106 +939,6 @@ export function App() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* ─── Admin Dialog ─── */}
-      <AlertDialog open={adminOpen} onOpenChange={setAdminOpen}>
-        <AlertDialogContent className="!left-0 !top-auto !bottom-0 !h-[92vh] !w-full !max-w-none !translate-x-0 !translate-y-0 rounded-b-none rounded-t-2xl p-0 md:!left-1/2 md:!top-1/2 md:!bottom-auto md:!h-[86vh] md:!max-w-5xl md:!-translate-x-1/2 md:!-translate-y-1/2 md:rounded-2xl">
-          <div className="flex h-full flex-col">
-            <div className="flex items-center justify-between border-b border-border/60 px-4 py-3 md:px-6">
-              <div className="space-y-0.5">
-                <div className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">Admin</div>
-                <h2 className="text-base font-bold tracking-tight">Race & Settlement</h2>
-              </div>
-              <Button type="button" size="sm" variant="outline" onClick={() => setAdminOpen(false)}>
-                Close
-              </Button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4 md:p-6">
-              <div className="mb-4 space-y-3 rounded-xl border border-border/50 bg-muted/10 p-4">
-                <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="admin-user-switch" className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                      Active Lad
-                    </Label>
-                    <select
-                      id="admin-user-switch"
-                      className="native-select"
-                      value={effectiveSelectedUserId}
-                      onChange={(event) => handleSwitchUser(event.target.value)}
-                    >
-                      {users.map((user) => (
-                        <option key={`admin-user-${user.id}`} value={user.id}>
-                          {user.displayName}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="text-xs text-muted-foreground">
-                      {selectedUserDisplayName ? `${selectedUserDisplayName} selected. ` : ""}
-                      Last refreshed: {lastRefreshedLabel}
-                    </div>
-                  </div>
-                  <Button
-                    type="button"
-                    className="justify-start gap-2"
-                    variant="outline"
-                    onClick={() => {
-                      void handleRefreshRaceData()
-                    }}
-                    disabled={refreshingRaceData || trackerMode === "simulated"}
-                  >
-                    <RefreshCw className={cn("size-4", refreshingRaceData ? "animate-spin" : "")} />
-                    {refreshingRaceData ? "Refreshing..." : "Refresh race data"}
-                  </Button>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-[auto_auto_minmax(0,1fr)] md:items-end">
-                  <div className="space-y-1.5">
-                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Data Mode</div>
-                    <div className="flex gap-1.5">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={trackerMode === "live" ? "default" : "outline"}
-                        onClick={() => handleToggleTrackerMode("live")}
-                      >
-                        Live
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={trackerMode === "simulated" ? "default" : "outline"}
-                        onClick={() => handleToggleTrackerMode("simulated")}
-                      >
-                        Simulated
-                      </Button>
-                    </div>
-                  </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      void handleGenerateSimulation()
-                    }}
-                    disabled={simulatingRaces}
-                  >
-                    {simulatingRaces ? "Simulating..." : "Simulate all races"}
-                  </Button>
-                  <div className="text-xs text-muted-foreground">
-                    {simulationInfo?.generatedAt
-                      ? `Simulation ready: ${formatIso(simulationInfo.generatedAt, "EEE d MMM HH:mm")} (${simulationInfo.racesSimulated} races)`
-                      : "No simulation generated yet."}
-                  </div>
-                </div>
-              </div>
-              <AdminPanel
-                races={races}
-                onUpdateResult={handleUpdateRaceResult}
-                onSettleRace={handleSettleRace}
-              />
-            </div>
-          </div>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   )
 }

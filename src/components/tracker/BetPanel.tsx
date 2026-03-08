@@ -159,7 +159,7 @@ export function BetPanel({
   )
 
   const currentOpenBets = useMemo(
-    () => bets.filter((bet) => bet.userId === selectedUserId && bet.status === "open").slice(0, 8),
+    () => bets.filter((bet) => bet.userId === selectedUserId && bet.status === "open"),
     [bets, selectedUserId],
   )
   const nextRace = useMemo(

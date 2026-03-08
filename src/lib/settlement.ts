@@ -502,9 +502,7 @@ function calculateProjectedProfitLossForOutcome(
 export function buildRaceOutcomeRanges(races: Race[], bets: Bet[]): RaceOutcomeRange[] {
   const racesById = new Map(races.map((race) => [race.id, race]))
   const sortedRaces = [...races].sort((a, b) => parseISO(a.offTime).getTime() - parseISO(b.offTime).getTime())
-  const settledRaces = sortedRaces.filter((race) => race.status === "settled")
-  const nextRace = sortedRaces.find((race) => race.status !== "settled")
-  const displayRaces = nextRace ? [...settledRaces, nextRace] : settledRaces
+  const displayRaces = sortedRaces
 
   if (!displayRaces.length) {
     return []

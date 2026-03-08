@@ -1,13 +1,15 @@
-# Cheltenham Bet Tracker (Phase 1)
+# Cheltenham Tracker
 
-Phase 1 implementation of the Cheltenham tracker with:
-- Bet entry (single / each-way / accumulator)
+Cheltenham tracker for a private group with:
+- `Have a Toot` bet entry flow
 - Main cashboard + league table
-- Personal stats + bet slip
+- `My Toots` personal history
+- Upcoming race field view with backer avatars
 - Manual race result entry + settlement
+- Live-ish Sporting Life race imports
 - Realtime updates via server-sent events (SSE)
 
-## Architecture (Server-side Firestore)
+## Architecture
 - Frontend: Vite + React + TypeScript + shadcn UI
 - Backend: Bun server (`server/index.ts`)
 - Firestore access: **server-side only** (frontend calls API/SSE only)
@@ -20,6 +22,13 @@ The frontend no longer reads/writes Firestore directly.
 - React + TypeScript
 - Recharts
 - Firebase Firestore (`cl/2026/...`)
+
+## Product Notes
+- Bets are referred to in the UI as `toots`.
+- Odds display defaults to `fractional`, with a sidebar toggle for decimal display.
+- The active user is controlled by the avatar switcher in the app shell.
+- The cashboard filter is `All` / `Me`, where `Me` means the currently selected user.
+- Simulated mode stops before the Gold Cup.
 
 ## Environment
 A `.env.local` has been created with your provided `rocketmill-octane` config.
@@ -60,6 +69,12 @@ bun run dev:full
 - `bun run test` - settlement tests
 - `bun run build` - frontend type-check + production build
 
+## Race Data
+- Cheltenham 2026 race import URLs live in [`public/race_urls.txt`](./public/race_urls.txt).
+- The server fetches Sporting Life race pages, extracts the `__NEXT_DATA__` JSON blob, and maps `props.pageProps.race` into the app's `Race` model.
+- This import path is used for runner data and result detection.
+- Odds remain a separate import/merge step.
+
 ## Implemented Firestore Shape
 - `cl/2026` (season metadata)
 - `cl/2026/users/{userId}`
@@ -76,19 +91,26 @@ bun run dev:full
 - `GET /api/state`
 - `GET /api/stream` (SSE)
 - `POST /api/bootstrap`
-- `POST /api/seed-races`
 - `POST /api/stats/recompute`
+- `GET /api/import/races/last-run`
+- `POST /api/import/races/refresh`
+- `POST /api/simulate/races`
+- `GET /api/simulate/info`
 - `POST /api/bets`
 - `PUT /api/bets/:id`
 - `DELETE /api/bets/:id`
+- `POST /api/bets/:id/manual-settle`
 - `POST /api/races`
 - `POST /api/races/:id/result`
 - `POST /api/races/:id/settle`
+- `POST /api/races/:id/import-lock`
 - `POST /api/notifications/daily-summary`
+- `POST /api/notifications/test-race-message`
 
 ## Notes
 - Access/auth is still intentionally lightweight for your private group.
-- Automation workers (scheduled polling/scraper/API) remain Phase 2.
+- This is a serverless-style app: race refreshes are initiated while users have the app open, rather than from an always-on worker.
+- SSE uses keepalive heartbeats to reduce idle reconnect churn.
 
 ## Deploying On Vercel (Single Host)
 - This repo includes a Vercel catch-all Function route at [`api/[...path].ts`](api/[...path].ts), so `/api/*` is handled on the same host.
@@ -98,10 +120,8 @@ bun run dev:full
   - `FIREBASE_PROJECT_ID=rocketmill-octane`
   - `FIREBASE_SERVICE_ACCOUNT_JSON=<single-line service account JSON>`
 - Optional env vars:
-  - `CHELTHENHAM_RACE_SOURCE_URL`
-  - `IRISHRACING_BASE_URL`
   - `ODDS_IMPORT_TIMEOUT_MS`
   - `ODDS_IMPORT_CONCURRENCY`
   - `ODDS_IMPORT_USER_AGENT`
 - If `VITE_API_BASE_URL` is currently set to `http://localhost:3001` in Vercel, remove it.
-- Note: `/api/stream` (SSE) works via function streaming but Vercel function duration limits can cause periodic reconnects.
+- Note: `/api/stream` (SSE) works via function streaming, but platform duration limits can still force reconnects in some environments.

@@ -41,7 +41,6 @@ const SPORTING_LIFE_USER_AGENT =
   process.env.SPORTING_LIFE_USER_AGENT ??
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 const SPORTING_LIFE_RACE_URLS_FILE = new URL("../public/race_urls.txt", import.meta.url)
-const SIMULATED_RACE_COUNT_BEFORE_GOLD_CUP = 25
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN?.trim() ?? ""
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID?.trim() ?? ""
 
@@ -69,24 +68,6 @@ type BetDraftInput = {
   ewTerms?: EwTerms
 }
 
-type RaceDraftInput = {
-  day: RaceDay
-  offTime: string
-  name: string
-  runners: string[]
-}
-
-type RaceResultInput = {
-  raceId: string
-  winner?: string
-  placed: string[]
-}
-
-type ImportLockInput = {
-  locked: boolean
-  reason?: string
-}
-
 type ManualOtherSettleInput = {
   totalReturn: number
 }
@@ -111,7 +92,6 @@ type RaceImportSummary = {
 
 type OddsSnapshot = NonNullable<Race["oddsSnapshot"]>
 type OddsSnapshotEntry = OddsSnapshot[number]
-type TrackerMode = "live" | "simulated"
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -143,10 +123,6 @@ db.settings({ ignoreUndefinedProperties: true })
 
 function seasonDoc(firestore: Firestore) {
   return firestore.collection(FIRESTORE_ROOT).doc(CURRENT_SEASON)
-}
-
-function simulatedSeasonDoc(firestore: Firestore) {
-  return firestore.collection(FIRESTORE_ROOT).doc(`${CURRENT_SEASON}_sim`)
 }
 
 function usersCol(firestore: Firestore) {
@@ -183,10 +159,6 @@ function jobsCol(firestore: Firestore) {
 
 function importJobsCol(firestore: Firestore) {
   return seasonDoc(firestore).collection("import_jobs")
-}
-
-function simulatedRacesCol(firestore: Firestore) {
-  return simulatedSeasonDoc(firestore).collection("races")
 }
 
 function normalizeHorseName(name: string): string {
@@ -590,28 +562,6 @@ function toStringHash(value: string): string {
   return String(Bun.hash(value))
 }
 
-function parseTrackerMode(raw: string | null | undefined): TrackerMode {
-  const normalized = (raw ?? "").trim().toLowerCase()
-  if (normalized === "simulated" || normalized === "simulation" || normalized === "sim") {
-    return "simulated"
-  }
-  return "live"
-}
-
-function seededRandomFactory(seedInput: string): () => number {
-  let state = Number(Bun.hash(seedInput)) >>> 0
-  if (state === 0) {
-    state = 0x6d2b79f5
-  }
-  return () => {
-    state += 0x6d2b79f5
-    let t = state
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
 function deriveLockAt(legs: Array<Pick<BetLeg, "raceId">>, races: Race[]): string {
   const times = legs
     .map((leg) => races.find((race) => race.id === leg.raceId)?.offTime)
@@ -904,79 +854,6 @@ function computeGlobalStats(bets: Bet[], users: UserProfile[], atIso: string): G
   }
 }
 
-function weightedOrderFromRunners(
-  runnerNames: string[],
-  oddsByRunner: Map<string, number>,
-  nextRandom: () => number,
-): string[] {
-  const fallbackOdds = oddsByRunner.size > 0 ? Math.max(...oddsByRunner.values()) : 12
-  const weighted = runnerNames.map((runner) => {
-    const normalized = normalizeHorseName(runner)
-    const decimalOdds = oddsByRunner.get(normalized) ?? fallbackOdds
-    const safeOdds = Number.isFinite(decimalOdds) && decimalOdds >= 1 ? decimalOdds : fallbackOdds
-    const weight = 1 / Math.max(1.01, safeOdds)
-    const random = Math.max(1e-9, nextRandom())
-    const key = -Math.log(random) / Math.max(weight, 1e-9)
-
-    return { runner, key }
-  })
-
-  weighted.sort((a, b) => a.key - b.key)
-  return weighted.map((entry) => entry.runner)
-}
-
-function buildPreviewBetFromRaces(bet: Bet, racesById: Map<string, Race>, atIso: string): Bet {
-  if (bet.betType === "other") {
-    return {
-      ...bet,
-      status: bet.status === "settled" ? "settled" : getDerivedBetStatus({ ...bet, status: "open" }, atIso),
-    }
-  }
-
-  const simulatedLegs = bet.legs.map((leg) => {
-    const race = racesById.get(leg.raceId)
-    if (!race) {
-      return { ...leg, result: "pending" as const }
-    }
-
-    const lifecycle = deriveRaceLifecycle(race.offTime, race.result, atIso)
-    if (lifecycle !== "complete") {
-      return { ...leg, result: "pending" as const }
-    }
-
-    return {
-      ...leg,
-      result: deriveLegResult(leg.selectionName, race, leg.horseUid),
-    }
-  })
-
-  const workingBet: Bet = {
-    ...bet,
-    legs: simulatedLegs,
-    status: "open",
-    settledAt: undefined,
-    totalReturn: undefined,
-    profitLoss: undefined,
-    updatedAt: atIso,
-  }
-
-  if (isBetSettleable(workingBet)) {
-    const totalReturn = roundMoney(calculateBetReturn(workingBet))
-    return {
-      ...workingBet,
-      status: "settled",
-      settledAt: atIso,
-      totalReturn,
-      profitLoss: roundMoney(totalReturn - workingBet.stakeTotal),
-    }
-  }
-
-  return {
-    ...workingBet,
-    status: getDerivedBetStatus(workingBet, atIso),
-  }
-}
-
 function mapRaceDoc(raw: Record<string, unknown>, id: string): Race {
   const resultRaw = (raw.result as Record<string, unknown> | undefined) ?? {}
   const importMetaRaw = (raw.importMeta as Record<string, unknown> | undefined) ?? {}
@@ -1201,125 +1078,6 @@ async function getRaces(): Promise<Race[]> {
   return snapshot.docs
     .map((entry) => mapRaceDoc(entry.data() as Record<string, unknown>, entry.id))
     .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())
-}
-
-async function getSimulatedRaces(): Promise<Race[]> {
-  const snapshot = await simulatedRacesCol(db).get()
-  if (snapshot.empty) {
-    return []
-  }
-
-  return snapshot.docs
-    .map((entry) => mapRaceDoc(entry.data() as Record<string, unknown>, entry.id))
-    .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())
-}
-
-async function generateRaceSimulation(seedInput?: string): Promise<{
-  runId: string
-  seed: string
-  racesSimulated: number
-  generatedAt: string
-}> {
-  const sourceRaces = await getRaces()
-  if (sourceRaces.length === 0) {
-    throw new Error("No races available to simulate")
-  }
-
-  const generatedAt = nowIso()
-  const runId = `sim_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-  const seed = (seedInput ?? runId).trim() || runId
-  const nextRandom = seededRandomFactory(seed)
-  const racesToSimulate = sourceRaces.slice(0, SIMULATED_RACE_COUNT_BEFORE_GOLD_CUP)
-
-  const batch = db.batch()
-  let racesSimulated = 0
-  const existingSimulatedSnapshot = await simulatedRacesCol(db).get()
-  existingSimulatedSnapshot.docs.forEach((entry) => {
-    batch.delete(entry.ref)
-  })
-
-  for (const race of racesToSimulate) {
-    const activeRunners = (race.runnersDetailed ?? [])
-      .filter((runner) => !runner.nonRunner)
-      .map((runner) => runner.horseName)
-    const runnerNames = activeRunners.length > 0 ? activeRunners : race.runners
-    if (runnerNames.length === 0) {
-      continue
-    }
-
-    const oddsByRunner = new Map<string, number>()
-    race.oddsSnapshot?.forEach((entry) => {
-      if (Number.isFinite(entry.bestDecimal) && entry.bestDecimal >= 1) {
-        oddsByRunner.set(normalizeHorseName(entry.horseName), Number(entry.bestDecimal))
-      }
-    })
-
-    const placed = weightedOrderFromRunners(runnerNames, oddsByRunner, nextRandom)
-    const winner = placed[0]
-    if (!winner) {
-      continue
-    }
-
-    const simulatedRace: Race = {
-      ...race,
-      result: {
-        winner,
-        placed,
-        source: "manual",
-        sourceRef: `simulated:${runId}`,
-        updatedAt: generatedAt,
-      },
-      lifecycle: "complete",
-      status: "settled",
-    }
-
-    batch.set(simulatedRacesCol(db).doc(race.id), simulatedRace, { merge: true })
-    racesSimulated += 1
-  }
-
-  batch.set(
-    simulatedSeasonDoc(db),
-    {
-      season: `${CURRENT_SEASON}_sim`,
-      sourceSeason: CURRENT_SEASON,
-      generatedAt,
-      runId,
-      seed,
-      racesSimulated,
-      updatedAt: generatedAt,
-    },
-    { merge: true },
-  )
-
-  await batch.commit()
-  await writeEvent("simulation_generated", { runId, seed, racesSimulated })
-
-  return {
-    runId,
-    seed,
-    racesSimulated,
-    generatedAt,
-  }
-}
-
-async function getSimulationInfo(): Promise<{
-  generatedAt?: string
-  runId?: string
-  seed?: string
-  racesSimulated: number
-} | null> {
-  const snapshot = await simulatedSeasonDoc(db).get()
-  if (!snapshot.exists) {
-    return null
-  }
-
-  const raw = snapshot.data() as Record<string, unknown>
-  return {
-    generatedAt: typeof raw.generatedAt === "string" ? raw.generatedAt : undefined,
-    runId: typeof raw.runId === "string" ? raw.runId : undefined,
-    seed: typeof raw.seed === "string" ? raw.seed : undefined,
-    racesSimulated: Number(raw.racesSimulated ?? 0),
-  }
 }
 
 async function getUsers(): Promise<UserProfile[]> {
@@ -1679,67 +1437,6 @@ async function resolveOtherBetManually(betId: string, input: ManualOtherSettleIn
 
   await recomputeAndPersistStats()
   await writeEvent("bet_manual_settled", { betId, totalReturn, profitLoss })
-}
-
-async function createRace(input: RaceDraftInput): Promise<void> {
-  const ref = racesCol(db).doc()
-  const now = nowIso()
-  const runners = input.runners.map((runner) => formatHorseName(runner)).filter(Boolean)
-  const runnersDetailed = runners.map((runner) => ({
-    horseName: runner,
-    horseUid: undefined,
-    nonRunner: false,
-  }))
-
-  await ref.set({
-    id: ref.id,
-    season: CURRENT_SEASON,
-    day: input.day,
-    offTime: input.offTime,
-    course: "Cheltenham",
-    name: sanitizeRaceName(input.name) || "Unnamed race",
-    source: "manual",
-    importLock: {
-      lockedByManualOverride: false,
-    },
-    runnersDetailed,
-    runners,
-    status: "scheduled",
-    lifecycle: deriveRaceLifecycle(input.offTime, EMPTY_RACE_RESULT, now),
-    result: EMPTY_RACE_RESULT,
-  })
-
-  await writeEvent("race_created", { raceId: ref.id })
-}
-
-async function updateRaceResult(input: RaceResultInput): Promise<void> {
-  const raceReference = racesCol(db).doc(input.raceId)
-  const raceSnapshot = await raceReference.get()
-  if (!raceSnapshot.exists) {
-    throw new Error("Race not found")
-  }
-
-  const placed = [...new Set(input.placed.map((name) => formatHorseName(name)).filter(Boolean))]
-  const winner = input.winner ? formatHorseName(input.winner) : undefined
-  if (winner && !placed.some((entry) => entry.toLowerCase() === winner.toLowerCase())) {
-    placed.unshift(winner)
-  }
-
-  await raceReference.set(
-    {
-      result: {
-        winner,
-        placed,
-        source: "manual",
-        updatedAt: nowIso(),
-      },
-      status: "result_pending",
-      lifecycle: "complete",
-    },
-    { merge: true },
-  )
-
-  await writeEvent("race_result_updated", { raceId: input.raceId })
 }
 
 async function settleRace(
@@ -2613,58 +2310,16 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
   }
 }
 
-async function setRaceImportLock(raceId: string, input: ImportLockInput): Promise<void> {
-  const raceRef = racesCol(db).doc(raceId)
-  const snapshot = await raceRef.get()
-  if (!snapshot.exists) {
-    throw new Error("Race not found")
-  }
-
-  await raceRef.set(
-    {
-      importLock: {
-        lockedByManualOverride: input.locked,
-        reason: input.locked ? input.reason?.trim() || "manual_override" : null,
-        lockedAt: input.locked ? nowIso() : null,
-      },
-    },
-    { merge: true },
-  )
-
-  await writeEvent("race_import_lock_updated", {
-    raceId,
-    locked: input.locked,
-    reason: input.reason ?? null,
-  })
-}
-
-async function loadState(mode: TrackerMode = "live"): Promise<TrackerState> {
+async function loadState(): Promise<TrackerState> {
   const users = await getUsers()
-  const [liveRaces, simulatedRaces, bets] = await Promise.all([getRaces(), getSimulatedRaces(), getBets()])
+  const [races, bets] = await Promise.all([getRaces(), getBets()])
   const atIso = nowIso()
-
-  if (mode === "simulated") {
-    const races = simulatedRaces.length > 0 ? simulatedRaces : liveRaces
-    const racesById = new Map(races.map((race) => [race.id, race]))
-    const simulatedBets = bets.map((bet) => buildPreviewBetFromRaces(bet, racesById, atIso))
-    const userStats = users.map((user) => computeUserStats(user, simulatedBets))
-    const globalStats = computeGlobalStats(simulatedBets, users, atIso)
-
-    return {
-      users,
-      races,
-      bets: simulatedBets,
-      userStats,
-      globalStats,
-      version: atIso,
-    }
-  }
 
   const [userStats, globalStats] = await Promise.all([getUserStats(), getGlobalStats()])
 
   return {
     users,
-    races: liveRaces,
+    races,
     bets,
     userStats,
     globalStats,
@@ -2776,10 +2431,9 @@ export async function handleApiRequest(request: Request): Promise<Response> {
 
   const url = new URL(request.url)
   const pathname = url.pathname.replace(/\/+$/, "") || "/"
-  const trackerMode = parseTrackerMode(url.searchParams.get("mode"))
   const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   const startedAt = Date.now()
-  console.info(`[api] ${requestId} ${request.method} ${pathname} start (mode=${trackerMode})`)
+  console.info(`[api] ${requestId} ${request.method} ${pathname} start`)
 
   if (request.method === "OPTIONS") {
     const response = new Response(null, { headers: withCorsHeaders(new Headers()) })
@@ -2814,7 +2468,7 @@ export async function handleApiRequest(request: Request): Promise<Response> {
     }
 
     if (request.method === "GET" && pathname === "/api/state") {
-      return jsonResponse(await loadState(trackerMode))
+      return jsonResponse(await loadState())
     }
 
     if (request.method === "GET" && pathname === "/api/stream") {
@@ -2895,17 +2549,6 @@ export async function handleApiRequest(request: Request): Promise<Response> {
       return jsonResponse({ ok: true, run })
     }
 
-    if (request.method === "POST" && pathname === "/api/simulate/races") {
-      const input = await request.json().catch(() => ({})) as { seed?: string }
-      const result = await generateRaceSimulation(input.seed)
-      return jsonResponse({ ok: true, ...result })
-    }
-
-    if (request.method === "GET" && pathname === "/api/simulate/info") {
-      const info = await getSimulationInfo()
-      return jsonResponse({ ok: true, info })
-    }
-
     if (request.method === "POST" && pathname === "/api/bets") {
       const input = await parseJson<BetDraftInput>(request)
       await createBet(input)
@@ -2941,48 +2584,6 @@ export async function handleApiRequest(request: Request): Promise<Response> {
       }
       const input = await parseJson<ManualOtherSettleInput>(request)
       await resolveOtherBetManually(betId, input)
-      await refreshAndBroadcastIfChanged()
-      return jsonResponse({ ok: true })
-    }
-
-    if (request.method === "POST" && pathname === "/api/races") {
-      const input = await parseJson<RaceDraftInput>(request)
-      await createRace(input)
-      await refreshAndBroadcastIfChanged()
-      return jsonResponse({ ok: true })
-    }
-
-    if (request.method === "POST" && pathname.startsWith("/api/races/") && pathname.endsWith("/result")) {
-      const raceId = pathname.split("/")[3]
-      if (!raceId) {
-        return errorResponse("Missing race id", 400)
-      }
-      const input = await parseJson<Omit<RaceResultInput, "raceId">>(request)
-      await updateRaceResult({ raceId, winner: input.winner, placed: input.placed ?? [] })
-      await refreshAndBroadcastIfChanged()
-      return jsonResponse({ ok: true })
-    }
-
-    if (request.method === "POST" && pathname.startsWith("/api/races/") && pathname.endsWith("/settle")) {
-      const raceId = pathname.split("/")[3]
-      if (!raceId) {
-        return errorResponse("Missing race id", 400)
-      }
-      await settleRace(raceId)
-      await refreshAndBroadcastIfChanged()
-      return jsonResponse({ ok: true })
-    }
-
-    if (request.method === "POST" && pathname.startsWith("/api/races/") && pathname.endsWith("/import-lock")) {
-      const raceId = pathname.split("/")[3]
-      if (!raceId) {
-        return errorResponse("Missing race id", 400)
-      }
-      const input = await parseJson<ImportLockInput>(request)
-      if (typeof input.locked !== "boolean") {
-        return errorResponse("Missing lock toggle flag", 400)
-      }
-      await setRaceImportLock(raceId, input)
       await refreshAndBroadcastIfChanged()
       return jsonResponse({ ok: true })
     }

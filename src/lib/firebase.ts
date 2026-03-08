@@ -1,5 +1,4 @@
-import type { Bet, GlobalStats, Race, RaceDay, RaceImportRun, UserProfile, UserStats } from "@/lib/types"
-export type TrackerMode = "live" | "simulated"
+import type { Bet, GlobalStats, Race, RaceImportRun, UserProfile, UserStats } from "@/lib/types"
 
 export type BetDraftInput = {
   userId: string
@@ -19,28 +18,9 @@ export type BetDraftInput = {
   }
 }
 
-export type RaceDraftInput = {
-  day: RaceDay
-  offTime: string
-  name: string
-  runners: string[]
-}
-
-export type RaceResultInput = {
-  raceId: string
-  winner?: string
-  placed: string[]
-}
-
 export type RaceImportRefreshResponse = {
   ok: true
   run: RaceImportRun
-}
-
-export type RaceImportLockInput = {
-  raceId: string
-  locked: boolean
-  reason?: string
 }
 
 type TrackerState = {
@@ -75,30 +55,8 @@ function resolveApiBaseUrl(): string {
 }
 
 const API_BASE_URL = resolveApiBaseUrl()
-const TRACKER_MODE_STORAGE_KEY = "cheltenham.trackerMode"
-
-function resolveInitialTrackerMode(): TrackerMode {
-  if (typeof window === "undefined") {
-    return "live"
-  }
-  const raw = window.localStorage.getItem(TRACKER_MODE_STORAGE_KEY)
-  return raw === "simulated" ? "simulated" : "live"
-}
-
-let trackerMode: TrackerMode = resolveInitialTrackerMode()
-
 function apiUrl(path: string): string {
   return API_BASE_URL ? `${API_BASE_URL}${path}` : path
-}
-
-function withMode(path: string): string {
-  if (trackerMode !== "simulated") {
-    return path
-  }
-  if (path !== "/api/state" && path !== "/api/stream") {
-    return path
-  }
-  return `${path}?mode=simulated`
 }
 
 const stateCache: TrackerState = {
@@ -118,50 +76,18 @@ const globalStatsListeners = new Set<(stats: GlobalStats | null) => void>()
 
 let stream: EventSource | null = null
 let streamInitPromise: Promise<void> | null = null
-let pollTimer: ReturnType<typeof setInterval> | null = null
-const SIMULATED_STATE_POLL_MS = 10000
-
-function hasActiveListeners(): boolean {
-  return (
-    usersListeners.size > 0 ||
-    racesListeners.size > 0 ||
-    betsListeners.size > 0 ||
-    userStatsListeners.size > 0 ||
-    globalStatsListeners.size > 0
-  )
-}
+let streamGeneration = 0
 
 function closeRealtimeTransport() {
+  streamGeneration++
   stream?.close()
   stream = null
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
   streamInitPromise = null
 }
 
-function assertMutable(path: string, init?: RequestInit) {
-  if (trackerMode !== "simulated") {
-    return
-  }
-
-  const method = String(init?.method ?? "GET").toUpperCase()
-  if (method === "GET") {
-    return
-  }
-
-  if (path === "/api/bootstrap" || path === "/api/simulate/races") {
-    return
-  }
-
-  throw new Error("Simulation mode is read-only. Switch to live mode in Admin actions to modify bets or races.")
-}
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  assertMutable(path, init)
   let response: Response
-  const targetUrl = apiUrl(withMode(path))
+  const targetUrl = apiUrl(path)
   const method = String(init?.method ?? "GET").toUpperCase()
   const headers = new Headers(init?.headers ?? undefined)
   const shouldSetJsonHeader =
@@ -226,28 +152,16 @@ async function ensureStream(): Promise<void> {
     return
   }
 
+  const gen = streamGeneration
+
   streamInitPromise = (async () => {
     const initial = await request<TrackerState>("/api/state")
+
+    // Stale: transport was closed while the request was in flight
+    if (streamGeneration !== gen) return
+
     publishState(initial)
-
-    if (trackerMode === "simulated") {
-      const pollState = () =>
-        request<TrackerState>("/api/state")
-          .then((nextState) => publishState(nextState))
-          .catch(() => {
-            // keep previous snapshot; next poll may succeed.
-          })
-
-      pollTimer = setInterval(() => {
-        if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-          return
-        }
-        void pollState()
-      }, SIMULATED_STATE_POLL_MS)
-      return
-    }
-
-    stream = new EventSource(apiUrl(withMode("/api/stream")))
+    stream = new EventSource(apiUrl("/api/stream"))
     stream.addEventListener("state", (event) => {
       const parsed = JSON.parse((event as MessageEvent).data) as TrackerState
       publishState(parsed)
@@ -290,28 +204,6 @@ function makeSubscription<T>(
     ) {
       closeRealtimeTransport()
     }
-  }
-}
-
-export function getTrackerMode(): TrackerMode {
-  return trackerMode
-}
-
-export function setTrackerMode(nextMode: TrackerMode, options?: { forceReconnect?: boolean }) {
-  const modeChanged = nextMode !== trackerMode
-  if (!modeChanged && !options?.forceReconnect) {
-    return
-  }
-  trackerMode = nextMode
-  if (modeChanged && typeof window !== "undefined") {
-    window.localStorage.setItem(TRACKER_MODE_STORAGE_KEY, nextMode)
-  }
-
-  closeRealtimeTransport()
-  if (hasActiveListeners()) {
-    void ensureStream().catch(() => {
-      // subscription consumer already handles surfaced errors.
-    })
   }
 }
 
@@ -374,26 +266,6 @@ export async function resolveOtherBetManually(input: { betId: string; totalRetur
   })
 }
 
-export async function createRace(input: RaceDraftInput): Promise<void> {
-  await request<{ ok: true }>("/api/races", {
-    method: "POST",
-    body: JSON.stringify(input),
-  })
-}
-
-export async function updateRaceResult(input: RaceResultInput): Promise<void> {
-  await request<{ ok: true }>(`/api/races/${input.raceId}/result`, {
-    method: "POST",
-    body: JSON.stringify({ winner: input.winner, placed: input.placed }),
-  })
-}
-
-export async function settleRace(raceId: string): Promise<void> {
-  await request<{ ok: true }>(`/api/races/${raceId}/settle`, {
-    method: "POST",
-  })
-}
-
 export async function recomputeAndPersistStats(): Promise<void> {
   await request<{ ok: true }>("/api/stats/recompute", { method: "POST" })
 }
@@ -416,42 +288,4 @@ export async function getLastRaceImportRun(): Promise<RaceImportRun | null> {
     method: "GET",
   })
   return payload.run
-}
-
-export async function setRaceImportLock(input: RaceImportLockInput): Promise<void> {
-  await request<{ ok: true }>(`/api/races/${input.raceId}/import-lock`, {
-    method: "POST",
-    body: JSON.stringify({ locked: input.locked, reason: input.reason }),
-  })
-}
-
-export async function generateRaceSimulation(seed?: string): Promise<{
-  ok: true
-  runId: string
-  seed: string
-  racesSimulated: number
-  generatedAt: string
-}> {
-  return await request<{ ok: true; runId: string; seed: string; racesSimulated: number; generatedAt: string }>(
-    "/api/simulate/races",
-    {
-      method: "POST",
-      body: JSON.stringify(seed ? { seed } : {}),
-    },
-  )
-}
-
-export async function getRaceSimulationInfo(): Promise<{
-  generatedAt?: string
-  runId?: string
-  seed?: string
-  racesSimulated: number
-} | null> {
-  const payload = await request<{
-    ok: true
-    info: { generatedAt?: string; runId?: string; seed?: string; racesSimulated: number } | null
-  }>("/api/simulate/info", {
-    method: "GET",
-  })
-  return payload.info
 }

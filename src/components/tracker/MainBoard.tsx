@@ -1,4 +1,5 @@
-import { ArrowDownRight, ArrowUpRight, Clock, Minus } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { ArrowDownRight, ArrowLeft, ArrowRight, ArrowUpRight, Clock, Minus } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCurrency, formatMarketOdds, formatPercent } from "@/lib/format"
@@ -14,7 +15,8 @@ type MainBoardProps = {
   races: Race[]
   stats: UserStats[]
   raceRanges: RaceOutcomeRange[]
-  outcomeScopeLabel: string
+  bestOutcomeLabel: string
+  worstOutcomeLabel: string
 }
 
 type RunnerBackerDetail = {
@@ -258,19 +260,43 @@ function CurrentRaceCard({
   bets,
   raceRanges,
   users,
-  outcomeScopeLabel,
+  bestOutcomeLabel,
+  worstOutcomeLabel,
 }: {
   races: Race[]
   bets: Bet[]
   raceRanges: RaceOutcomeRange[]
   users: UserProfile[]
-  outcomeScopeLabel: string
+  bestOutcomeLabel: string
+  worstOutcomeLabel: string
 }) {
-  const nextRace = races
-    .filter((race) => race.status !== "settled")
-    .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0]
+  const orderedRaces = useMemo(
+    () => [...races].sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime()),
+    [races],
+  )
+  const defaultRaceId = useMemo(
+    () => orderedRaces.find((race) => race.status !== "settled")?.id ?? orderedRaces[0]?.id ?? null,
+    [orderedRaces],
+  )
+  const [selectedRaceId, setSelectedRaceId] = useState<string | null>(defaultRaceId)
 
-  if (!nextRace) {
+  useEffect(() => {
+    if (!selectedRaceId) {
+      setSelectedRaceId(defaultRaceId)
+      return
+    }
+
+    if (!orderedRaces.some((race) => race.id === selectedRaceId)) {
+      setSelectedRaceId(defaultRaceId)
+    }
+  }, [defaultRaceId, orderedRaces, selectedRaceId])
+
+  const selectedRaceIndex = orderedRaces.findIndex((race) => race.id === selectedRaceId)
+  const currentRace =
+    (selectedRaceIndex >= 0 ? orderedRaces[selectedRaceIndex] : undefined) ??
+    orderedRaces.find((race) => race.id === defaultRaceId)
+
+  if (!currentRace) {
     return (
       <Card className="shadow-xs">
         <CardContent className="py-8 text-center">
@@ -280,12 +306,14 @@ function CurrentRaceCard({
     )
   }
 
-  const raceBets = bets.filter((bet) => bet.legs.some((leg) => leg.raceId === nextRace.id))
+  const raceBets = bets.filter((bet) => bet.legs.some((leg) => leg.raceId === currentRace.id))
   const raceStaked = raceBets.reduce((acc, bet) => acc + bet.stakeTotal, 0)
-  const nextRaceRange = raceRanges.find((entry) => entry.raceId === nextRace.id)
-  const runnerRows = buildNextRaceRunnerRows(nextRace, bets, users)
-  const bestHorseName = nextRaceRange ? extractScenarioHorseName(nextRaceRange.bestScenario) : ""
-  const worstHorseName = nextRaceRange ? extractScenarioHorseName(nextRaceRange.worstScenario) : ""
+  const currentRaceRange = raceRanges.find((entry) => entry.raceId === currentRace.id)
+  const runnerRows = buildNextRaceRunnerRows(currentRace, bets, users)
+  const bestHorseName = currentRaceRange ? extractScenarioHorseName(currentRaceRange.bestScenario) : ""
+  const worstHorseName = currentRaceRange ? extractScenarioHorseName(currentRaceRange.worstScenario) : ""
+  const canGoPrevious = selectedRaceIndex > 0
+  const canGoNext = selectedRaceIndex >= 0 && selectedRaceIndex < orderedRaces.length - 1
 
   return (
     <Card className="shadow-xs">
@@ -296,30 +324,60 @@ function CurrentRaceCard({
               <Clock className="size-3.5 text-muted-foreground" />
               <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Next Race</span>
             </div>
-            <div className="mt-1.5 text-base font-bold">{nextRace.name}</div>
-            <div className="mt-0.5 text-sm text-muted-foreground">{formatIso(nextRace.offTime, "EEE HH:mm")}</div>
+            <div className="mt-1.5 text-base font-bold">{currentRace.name}</div>
+            <div className="mt-0.5 text-sm text-muted-foreground">{formatIso(currentRace.offTime, "EEE HH:mm")}</div>
           </div>
           <div className="flex flex-col items-end gap-1.5">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-border/50 text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => {
+                  if (!canGoPrevious) {
+                    return
+                  }
+                  setSelectedRaceId(orderedRaces[selectedRaceIndex - 1]?.id ?? null)
+                }}
+                disabled={!canGoPrevious}
+                aria-label="Previous race"
+              >
+                <ArrowLeft className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-border/50 text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() => {
+                  if (!canGoNext) {
+                    return
+                  }
+                  setSelectedRaceId(orderedRaces[selectedRaceIndex + 1]?.id ?? null)
+                }}
+                disabled={!canGoNext}
+                aria-label="Next race"
+              >
+                <ArrowRight className="size-3.5" />
+              </button>
+            </div>
             <Badge variant="secondary" className="tabular-nums">{raceBets.length} bets</Badge>
             <Badge variant="outline" className="tabular-nums">{formatCurrency(raceStaked)}</Badge>
           </div>
         </div>
-        {nextRaceRange ? (
+        {currentRaceRange ? (
           <div className="mt-3 rounded-lg border border-border/40 bg-muted/15 px-3 py-3">
             <div className="grid gap-2 text-sm">
               <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">Best winner ({outcomeScopeLabel})</span>
+                <span className="text-muted-foreground">{bestOutcomeLabel}</span>
                 <div className="text-right">
-                  <div className="font-semibold tabular-nums text-primary">{formatCurrency(nextRaceRange.bestClosePnl)}</div>
+                  <div className="font-semibold tabular-nums text-primary">{formatCurrency(currentRaceRange.bestClosePnl)}</div>
                   {bestHorseName ? (
                     <div className="text-[11px] text-foreground">{bestHorseName}</div>
                   ) : null}
                 </div>
               </div>
               <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">Worst winner ({outcomeScopeLabel})</span>
+                <span className="text-muted-foreground">{worstOutcomeLabel}</span>
                 <div className="text-right">
-                  <div className="font-semibold tabular-nums text-destructive">{formatCurrency(nextRaceRange.worstClosePnl)}</div>
+                  <div className="font-semibold tabular-nums text-destructive">{formatCurrency(currentRaceRange.worstClosePnl)}</div>
                   {worstHorseName ? (
                     <div className="text-[11px] text-foreground">{worstHorseName}</div>
                   ) : null}
@@ -409,7 +467,8 @@ export function MainBoard({
   races,
   stats,
   raceRanges,
-  outcomeScopeLabel,
+  bestOutcomeLabel,
+  worstOutcomeLabel,
 }: MainBoardProps) {
   const statsByUser = new Map(stats.map((entry) => [entry.userId, entry]))
   const latestSettledRace = races
@@ -485,7 +544,8 @@ export function MainBoard({
         bets={bets}
         raceRanges={raceRanges}
         users={users}
-        outcomeScopeLabel={outcomeScopeLabel}
+        bestOutcomeLabel={bestOutcomeLabel}
+        worstOutcomeLabel={worstOutcomeLabel}
       />
 
       <Card className="shadow-xs">

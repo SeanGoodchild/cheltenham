@@ -9,9 +9,8 @@ import {
   subscribeUsers,
 } from "@/lib/firebase"
 import type { Bet, GlobalStats, Race, UserProfile, UserStats } from "@/lib/types"
-import type { TrackerMode } from "@/lib/firebase"
 
-export function useTrackerData(mode: TrackerMode) {
+export function useTrackerData() {
   const [users, setUsers] = useState<UserProfile[]>([])
   const [races, setRaces] = useState<Race[]>([])
   const [bets, setBets] = useState<Bet[]>([])
@@ -41,7 +40,7 @@ export function useTrackerData(mode: TrackerMode) {
     return () => {
       mounted = false
     }
-  }, [mode])
+  }, [])
 
   useEffect(() => {
     if (bootstrapping) {
@@ -59,7 +58,7 @@ export function useTrackerData(mode: TrackerMode) {
     return () => {
       unsubscribers.forEach((unsubscribe) => unsubscribe())
     }
-  }, [bootstrapping, mode])
+  }, [bootstrapping])
 
   const value = useMemo(
     () => ({

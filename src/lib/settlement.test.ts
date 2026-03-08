@@ -258,6 +258,46 @@ describe("race outcome ranges", () => {
     })
   })
 
+  it("builds forecast ranges for races beyond the next race", () => {
+    const futureRace: Race = {
+      ...nextRace,
+      id: "r3",
+      offTime: "2026-03-10T15:30:00.000Z",
+      name: "Future Race",
+      runners: ["Horse G", "Horse H"],
+      runnersDetailed: [
+        { horseName: "Horse G", horseUid: 7, nonRunner: false },
+        { horseName: "Horse H", horseUid: 8, nonRunner: false },
+      ],
+      marketFavourite: {
+        horseName: "Horse G",
+        horseUid: 7,
+        bestFractional: "3/1",
+        bestDecimal: 4,
+        source: "irishracing",
+        importedAt: "2026-03-10T14:00:00.000Z",
+      },
+    }
+
+    const futureBet = baseBet({
+      id: "b-future",
+      legs: [{ raceId: "r3", selectionName: "Horse G", decimalOdds: 4, result: "pending" }],
+    })
+
+    const ranges = buildRaceOutcomeRanges([settledRace, nextRace, futureRace], [futureBet])
+
+    expect(ranges).toHaveLength(3)
+    expect(ranges[2]).toMatchObject({
+      raceId: "r3",
+      actualClosePnl: undefined,
+      bestDelta: 30,
+      worstDelta: -10,
+      bestClosePnl: 30,
+      worstClosePnl: -10,
+      isForecast: true,
+    })
+  })
+
   it("handles each-way win, place, and lose outcomes", () => {
     const ewBet = baseBet({
       betType: "each_way",
