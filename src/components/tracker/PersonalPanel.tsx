@@ -89,7 +89,7 @@ export function PersonalPanel({
         <CardContent className="py-4">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-base font-bold">{user.displayName}'s Bets</h2>
+              <h2 className="text-base font-bold">{user.displayName}'s Toots</h2>
               <div className="mt-0.5 text-xs text-muted-foreground">
                 {personalBets.length} bets &middot; {formatCurrency(totalStaked)} staked
               </div>
@@ -118,7 +118,7 @@ export function PersonalPanel({
         {personalBets.length === 0 ? (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No bets placed yet. Head to the Bet tab to get started.
+              No toots placed yet. Head to the Toot tab to get started.
             </CardContent>
           </Card>
         ) : null}

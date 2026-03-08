@@ -65,7 +65,27 @@ function formatStakeInput(value: number): string {
   return value.toFixed(2)
 }
 
-function newDraft(userId: string): BetDraftForm {
+function buildEmptyLeg(race?: Race): BetDraftForm["legs"][number] {
+  return {
+    raceId: race?.id ?? "",
+    selectionName: "",
+    decimalOdds: null,
+    horseUid: undefined,
+  }
+}
+
+function buildQuickPickForRace(race?: Race): { day?: RaceDay; time?: string } {
+  if (!race) {
+    return {}
+  }
+
+  return {
+    day: race.day,
+    time: formatIso(race.offTime, "HH:mm"),
+  }
+}
+
+function newDraft(userId: string, nextRace?: Race): BetDraftForm {
   return {
     userId,
     betType: "single",
@@ -76,14 +96,7 @@ function newDraft(userId: string): BetDraftForm {
       placesPaid: 3,
       placeFraction: 0.2,
     },
-    legs: [
-      {
-        raceId: "",
-        selectionName: "",
-        decimalOdds: null,
-        horseUid: undefined,
-      },
-    ],
+    legs: [buildEmptyLeg(nextRace)],
   }
 }
 
@@ -140,30 +153,40 @@ export function BetPanel({
   const [stakeInput, setStakeInput] = useState("")
   const [quickRacePicks, setQuickRacePicks] = useState<Record<number, { day?: RaceDay; time?: string }>>({})
   const [accaOddsManuallySet, setAccaOddsManuallySet] = useState(false)
+  const racesSorted = useMemo(
+    () => [...races].sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime()),
+    [races],
+  )
 
   const currentOpenBets = useMemo(
-    () => bets.filter((bet) => bet.userId === selectedUserId).slice(0, 8),
+    () => bets.filter((bet) => bet.userId === selectedUserId && bet.status === "open").slice(0, 8),
     [bets, selectedUserId],
+  )
+  const nextRace = useMemo(
+    () =>
+      racesSorted.find((race) => new Date(race.offTime).getTime() > Date.now()) ??
+      racesSorted.find((race) => race.status !== "settled" && race.status !== "result_pending"),
+    [racesSorted],
   )
 
   const resetDraft = (userId: string) => {
-    const nextDraft = newDraft(userId)
+    const nextDraft = newDraft(userId, nextRace)
     setDraft(nextDraft)
     setStakeInput("")
     setEditingBetId(null)
-    setQuickRacePicks({})
+    setQuickRacePicks({ 0: buildQuickPickForRace(nextRace) })
     setAccaOddsManuallySet(false)
   }
 
   useEffect(() => {
-    const nextDraft = newDraft(selectedUserId)
+    const nextDraft = newDraft(selectedUserId, nextRace)
     setDraft(nextDraft)
     setStakeInput("")
     setEditingBetId(null)
-    setQuickRacePicks({})
+    setQuickRacePicks({ 0: buildQuickPickForRace(nextRace) })
     setActionError(null)
     setAccaOddsManuallySet(false)
-  }, [selectedUserId])
+  }, [nextRace, selectedUserId])
 
   const hydrateFromBet = (bet: Bet) => {
     setEditingBetId(bet.id)
@@ -202,10 +225,6 @@ export function BetPanel({
     )
   }
 
-  const racesSorted = useMemo(
-    () => [...races].sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime()),
-    [races],
-  )
   const racesByDay = useMemo(() => {
     const grouped: Record<RaceDay, Race[]> = {
       Tuesday: [],
@@ -365,7 +384,7 @@ export function BetPanel({
       <Card className="shadow-xs">
         <CardHeader>
           <CardTitle className="text-base font-bold">
-            {editingBetId ? "Edit Bet" : "Place a Bet"}
+            {editingBetId ? "Edit Bet" : "Have a toot"}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -403,7 +422,7 @@ export function BetPanel({
                   }
                 />
                 <div className="text-xs text-muted-foreground">
-                  Settle this manually later from My Bets.
+                  Settle this manually later from My Toots.
                 </div>
               </div>
             ) : null}
@@ -418,12 +437,29 @@ export function BetPanel({
                 const dayRaces = selectedDay ? racesByDay[selectedDay] : []
                 const dayTimes = [...new Set(dayRaces.map((entry) => raceTimeLabel(entry.offTime)))]
                 const horseOptions = (
-                  race?.runnersDetailed?.filter((runner) => !runner.nonRunner).map((runner) => runner.horseName) ??
-                  race?.runners ??
+                  race?.runnersDetailed?.filter((runner) => !runner.nonRunner).map((runner) => ({
+                    horseName: runner.horseName,
+                    horseUid: runner.horseUid,
+                    marketOdds: findMarketDecimalOdds(race, runner.horseName, runner.horseUid),
+                  })) ??
+                  race?.runners.map((horseName) => ({
+                    horseName,
+                    horseUid: undefined,
+                    marketOdds: findMarketDecimalOdds(race, horseName),
+                  })) ??
                   []
                 )
                   .slice()
-                  .sort((a, b) => a.localeCompare(b))
+                  .sort((a, b) => {
+                    const aOdds = typeof a.marketOdds === "number" ? a.marketOdds : Number.POSITIVE_INFINITY
+                    const bOdds = typeof b.marketOdds === "number" ? b.marketOdds : Number.POSITIVE_INFINITY
+
+                    if (aOdds !== bOdds) {
+                      return aOdds - bOdds
+                    }
+
+                    return a.horseName.localeCompare(b.horseName)
+                  })
                 const datalistId = `runners-${index}`
 
                   return (
@@ -460,6 +496,7 @@ export function BetPanel({
                           className="quick-pick"
                           data-active={selectedDay === day}
                           onClick={() => {
+                            setLegRace(index, "")
                             setQuickRacePicks((prev) => ({
                               ...prev,
                               [index]: { day, time: undefined },
@@ -502,20 +539,18 @@ export function BetPanel({
                       draft.betType === "accumulator" ? "md:grid-cols-2" : "md:grid-cols-3",
                     )}>
                       <div className="space-y-1.5">
-                        <Label htmlFor={`race-${index}`} className="text-xs text-muted-foreground">Race</Label>
-                        <select
-                          id={`race-${index}`}
-                          value={leg.raceId}
-                          className="native-select"
-                          onChange={(event) => setLegRace(index, event.target.value)}
-                        >
-                          <option value="">Select race</option>
-                          {racesSorted.map((entry) => (
-                            <option key={entry.id} value={entry.id}>
-                              {formatIso(entry.offTime, "EEE HH:mm")} - {entry.name}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="flex items-center justify-between gap-2">
+                          <Label className="text-xs text-muted-foreground">Race</Label>
+                        </div>
+                        <div className="rounded-lg border border-border/50 bg-muted/10 px-3 py-2.5 text-sm">
+                          {race ? (
+                            <div className="font-medium">{race.name}</div>
+                          ) : selectedDay ? (
+                            <div className="text-muted-foreground">Pick a time pill above to choose the race.</div>
+                          ) : (
+                            <div className="text-muted-foreground">Pick a day pill, then a time pill above.</div>
+                          )}
+                        </div>
                       </div>
 
                       <div className="space-y-1.5">
@@ -556,9 +591,9 @@ export function BetPanel({
                           }}
                         >
                           <option value="">{race ? "Select horse" : "Pick race first"}</option>
-                          {horseOptions.map((horseName) => (
-                            <option key={`${datalistId}-${horseName}`} value={horseName}>
-                              {horseName}
+                          {horseOptions.map((horse) => (
+                            <option key={`${datalistId}-${horse.horseName}`} value={horse.horseName}>
+                              {horse.marketOdds ? `${horse.horseName} - ${formatOdds(horse.marketOdds)}` : horse.horseName}
                             </option>
                           ))}
                         </select>
@@ -608,16 +643,6 @@ export function BetPanel({
                       </div>
                     ) : null}
 
-                    {race?.marketFavourite ? (
-                      <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">
-                        <span>Fav:</span>
-                        <span className="font-medium text-foreground">{race.marketFavourite.horseName}</span>
-                        <span>{race.marketFavourite.bestFractional} ({formatOdds(race.marketFavourite.bestDecimal)})</span>
-                        {race.oddsMeta?.importedAt ? (
-                          <span className="ml-auto text-[10px]">{formatIso(race.oddsMeta.importedAt, "HH:mm")}</span>
-                        ) : null}
-                      </div>
-                    ) : null}
                     </div>
                   )
                 })}
@@ -632,8 +657,12 @@ export function BetPanel({
                         oddsUsed: !accaOddsManuallySet ? null : prev.oddsUsed,
                         legs: [
                           ...prev.legs,
-                          { raceId: "", selectionName: "", decimalOdds: null, horseUid: undefined },
+                          buildEmptyLeg(nextRace),
                         ],
+                      }))
+                      setQuickRacePicks((prev) => ({
+                        ...prev,
+                        [draft.legs.length]: buildQuickPickForRace(nextRace),
                       }))
                     }}
                   >
@@ -807,7 +836,7 @@ export function BetPanel({
                 disabled={submitting || hasMissingOdds || hasMissingOtherName}
                 className="min-w-[120px]"
               >
-                {submitting ? "Saving..." : editingBetId ? "Update Bet" : "Place Bet"}
+                {submitting ? "Saving..." : editingBetId ? "Update Bet" : "Submit toot"}
               </Button>
               {editingBetId ? (
                 <Button
@@ -831,11 +860,11 @@ export function BetPanel({
         </CardContent>
       </Card>
 
-      {/* Recent Bets */}
+      {/* Open Toots */}
       {currentOpenBets.length > 0 ? (
         <Card className="shadow-xs">
           <CardHeader>
-            <CardTitle className="text-sm font-semibold">Recent Bets</CardTitle>
+            <CardTitle className="text-sm font-semibold">Open Toots</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {currentOpenBets.map((bet) => {
@@ -863,7 +892,7 @@ export function BetPanel({
                         <span className="font-medium text-foreground">{formatCurrency(potentialWin)}</span>
                       </div>
                       {bet.betType === "other" ? (
-                        <div className="mt-0.5 text-[11px] text-muted-foreground">Settle from My Bets</div>
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">Settle from My Toots</div>
                       ) : (
                         <div className="mt-0.5 text-[11px] text-muted-foreground">
                           Locks {formatIso(bet.lockAt, "EEE HH:mm")}

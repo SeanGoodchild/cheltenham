@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react"
-import { ChevronDown, Clock, Menu, RefreshCw, Shield, Trophy, UserRound, Wallet, X } from "lucide-react"
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
+import { Check, ChevronDown, Clock, Menu, RefreshCw, Shield, Trophy, UserRound, Wallet, X } from "lucide-react"
 
 import { AdminPanel } from "@/components/tracker/AdminPanel"
 import { BetPanel, type BetDraftForm } from "@/components/tracker/BetPanel"
@@ -20,8 +20,8 @@ import { Button } from "@/components/ui/button"
 // Card removed -- errors use inline div now
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
@@ -42,20 +42,37 @@ import {
   updateBet,
   updateRaceResult,
 } from "@/lib/firebase"
-import { computeGlobalStats, computeUserStats } from "@/lib/settlement"
+import { getStoredOddsFormat, persistOddsFormat, type OddsFormat } from "@/lib/format"
+import { buildRaceOutcomeRanges, computeGlobalStats, computeUserStats } from "@/lib/settlement"
 import { formatIso, nowIso } from "@/lib/time"
-import type { Bet, GlobalStats, RaceImportRun } from "@/lib/types"
+import type { Bet, GlobalStats, Race, RaceImportRun, UserProfile } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 const USER_STORAGE_KEY = "cheltenham.selectedUser"
 type AppTab = "new-bet" | "main-cashboard" | "user-summary"
-type MainBoardUserView = { mode: "all" } | { mode: "custom"; userIds: string[] }
+type MainBoardUserView = { mode: "all" | "me" }
+const MINUTE_MS = 60_000
+const AUTO_REFRESH_BUSY_BACKOFF_MS = MINUTE_MS
+const AUTO_REFRESH_FAILED_BACKOFF_MS = 2 * MINUTE_MS
 
 const TABS: Array<{ id: AppTab; label: string; shortLabel: string; icon: typeof Wallet }> = [
-  { id: "new-bet", label: "Place a Bet", shortLabel: "Bet", icon: Wallet },
+  { id: "new-bet", label: "Have a Toot", shortLabel: "Toot", icon: Wallet },
   { id: "main-cashboard", label: "Cashboard", shortLabel: "Board", icon: Trophy },
-  { id: "user-summary", label: "My Bets", shortLabel: "My Bets", icon: UserRound },
+  { id: "user-summary", label: "My Toots", shortLabel: "My Toots", icon: UserRound },
 ]
+
+const USER_AVATAR_SRC_BY_ID: Record<string, string> = {
+  fabs: "/avatars/Fabs.png",
+  ru: "/avatars/Ru.png",
+  shiblen: "/avatars/Shiblen.png",
+  howes: "/avatars/Howes.png",
+  steve: "/avatars/Steve.png",
+  sean: "/avatars/Sean.png",
+  gordo: "/avatars/Gordo.png",
+  tim: "/avatars/Tim.png",
+  wilks: "/avatars/Wilkes.png",
+  grandad_packet: "/avatars/Grandad Packet.png",
+}
 
 function toBetDraft(form: BetDraftForm) {
   return {
@@ -97,7 +114,89 @@ function formatCountdown(msUntil: number): string {
   return `${seconds}s`
 }
 
-function UserAvatar({ name, size = "md" }: { name: string; size?: "sm" | "md" }) {
+function resolveAutoRefreshRace(races: Race[]): Race | null {
+  return [...races]
+    .filter((race) => race.status !== "settled" && race.status !== "result_pending")
+    .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0] ?? null
+}
+
+function resolveAutoRefreshInterval(offTimeIso: string, nowMs: number): { intervalMs: number; nextBoundaryAtMs?: number } {
+  const offTimeMs = new Date(offTimeIso).getTime()
+  const msUntilOff = offTimeMs - nowMs
+
+  if (msUntilOff > 90 * MINUTE_MS) {
+    return { intervalMs: 15 * MINUTE_MS, nextBoundaryAtMs: offTimeMs - 90 * MINUTE_MS }
+  }
+  if (msUntilOff > 30 * MINUTE_MS) {
+    return { intervalMs: 10 * MINUTE_MS, nextBoundaryAtMs: offTimeMs - 30 * MINUTE_MS }
+  }
+  if (msUntilOff > 10 * MINUTE_MS) {
+    return { intervalMs: 5 * MINUTE_MS, nextBoundaryAtMs: offTimeMs - 10 * MINUTE_MS }
+  }
+  if (msUntilOff > -15 * MINUTE_MS) {
+    return { intervalMs: 90_000, nextBoundaryAtMs: offTimeMs + 15 * MINUTE_MS }
+  }
+  if (msUntilOff > -30 * MINUTE_MS) {
+    return { intervalMs: 3 * MINUTE_MS, nextBoundaryAtMs: offTimeMs + 30 * MINUTE_MS }
+  }
+  return { intervalMs: 5 * MINUTE_MS }
+}
+
+function resolveNextEligibleRefreshAt(run: RaceImportRun | null, intervalMs: number, nowMs: number): number {
+  if (!run) {
+    return nowMs
+  }
+
+  if (run.status === "busy" || run.status === "running") {
+    return nowMs + AUTO_REFRESH_BUSY_BACKOFF_MS
+  }
+
+  const completedAtMs = run.completedAt ? new Date(run.completedAt).getTime() : NaN
+  if (!Number.isFinite(completedAtMs)) {
+    return nowMs
+  }
+
+  if (run.status === "failed") {
+    return completedAtMs + AUTO_REFRESH_FAILED_BACKOFF_MS
+  }
+
+  return completedAtMs + intervalMs
+}
+
+function resolveNextAutoRefreshDelay(input: {
+  nowMs: number
+  intervalMs: number
+  nextEligibleAtMs: number
+  nextBoundaryAtMs?: number
+}): number {
+  const candidates = [
+    Math.max(1_000, input.nextEligibleAtMs - input.nowMs),
+    input.intervalMs,
+  ]
+
+  if (typeof input.nextBoundaryAtMs === "number" && Number.isFinite(input.nextBoundaryAtMs)) {
+    candidates.push(Math.max(1_000, input.nextBoundaryAtMs - input.nowMs))
+  }
+
+  return Math.max(1_000, Math.min(...candidates))
+}
+
+function getUserAvatarSrc(user: Pick<UserProfile, "id"> | null | undefined) {
+  if (!user) {
+    return null
+  }
+  return USER_AVATAR_SRC_BY_ID[user.id] ?? null
+}
+
+function UserAvatar({
+  name,
+  src,
+  size = "md",
+}: {
+  name: string
+  src?: string | null
+  size?: "sm" | "md" | "lg"
+}) {
   const initials = name
     .split(/\s+/)
     .map((word) => word[0])
@@ -105,15 +204,83 @@ function UserAvatar({ name, size = "md" }: { name: string; size?: "sm" | "md" })
     .toUpperCase()
     .slice(0, 2)
 
+  const sizeClass = size === "sm" ? "h-7 w-7 text-[10px]" : size === "lg" ? "h-11 w-11 text-sm" : "h-9 w-9 text-xs"
+
   return (
     <div
       className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-lg bg-primary/15 font-semibold text-primary",
-        size === "sm" ? "h-7 w-7 text-[10px]" : "h-9 w-9 text-xs",
+        "inline-flex shrink-0 items-center justify-center overflow-hidden rounded-xl font-semibold text-primary",
+        !src && "bg-primary/15",
+        sizeClass,
       )}
     >
-      {initials}
+      {src ? (
+        <img src={src} alt={name} className="h-full w-full object-cover" />
+      ) : (
+        initials
+      )}
     </div>
+  )
+}
+
+function UserSwitcher({
+  users,
+  selectedUserId,
+  onSwitchUser,
+  betCount,
+  compact = false,
+}: {
+  users: UserProfile[]
+  selectedUserId: string
+  onSwitchUser: (value: string) => void
+  betCount: number
+  compact?: boolean
+}) {
+  const selectedUser = users.find((user) => user.id === selectedUserId)
+  if (!selectedUser) {
+    return null
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        className={cn(
+          "inline-flex items-center gap-2 rounded-xl border border-border/60 bg-card/70 text-left shadow-sm transition-colors hover:bg-muted/40",
+          compact ? "h-10 px-2.5" : "px-3 py-2",
+        )}
+      >
+        <UserAvatar
+          name={selectedUser.displayName}
+          src={getUserAvatarSrc(selectedUser)}
+          size={compact ? "sm" : "lg"}
+        />
+        {!compact ? (
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold">{selectedUser.displayName}</div>
+            <div className="text-[11px] text-muted-foreground">{betCount} bets placed</div>
+          </div>
+        ) : null}
+        <ChevronDown className="size-3.5 text-muted-foreground" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64">
+        <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Swap lad</div>
+        <DropdownMenuSeparator />
+        {users.map((user) => {
+          const isSelected = user.id === selectedUserId
+          return (
+            <DropdownMenuItem
+              key={`user-switch-${user.id}`}
+              className="gap-3 py-2"
+              onClick={() => onSwitchUser(user.id)}
+            >
+              <UserAvatar name={user.displayName} src={getUserAvatarSrc(user)} size="sm" />
+              <span className="min-w-0 flex-1 truncate">{user.displayName}</span>
+              {isSelected ? <Check className="size-4 text-primary" /> : null}
+            </DropdownMenuItem>
+          )
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -134,8 +301,13 @@ export function App() {
   const [adminOpen, setAdminOpen] = useState(false)
   const [identityDraftUserId, setIdentityDraftUserId] = useState("")
   const [mainBoardUserView, setMainBoardUserView] = useState<MainBoardUserView>({ mode: "all" })
+  const [oddsFormat, setOddsFormat] = useState<OddsFormat>(() => getStoredOddsFormat())
   const [simulatingRaces, setSimulatingRaces] = useState(false)
   const [nowTickMs, setNowTickMs] = useState(() => Date.now())
+  const [isPageVisible, setIsPageVisible] = useState(() =>
+    typeof document === "undefined" ? true : document.visibilityState === "visible",
+  )
+  const raceImportRunRef = useRef<RaceImportRun | null>(null)
   const [simulationInfo, setSimulationInfo] = useState<{
     generatedAt?: string
     runId?: string
@@ -162,53 +334,40 @@ export function App() {
   const identityGateOpen = !bootstrapping && users.length > 0 && !hasValidSelectedUser
   const selectedSummaryUser = users.find((user) => user.id === resolvedSelectedUserId)
   const selectedUserDisplayName = selectedSummaryUser?.displayName ?? ""
-  const mainBoardUserOptions = useMemo(() => {
-    const self = users.find((user) => user.id === resolvedSelectedUserId)
-    if (!self) {
-      return users
-    }
-    return [self, ...users.filter((user) => user.id !== self.id)]
-  }, [resolvedSelectedUserId, users])
-  const mainBoardSelectedUserIds = useMemo(() => {
-    if (mainBoardUserView.mode === "all") {
-      return mainBoardUserOptions.map((user) => user.id)
+  const isGordoUltraDark = resolvedSelectedUserId === "gordo"
+  const selectedUserBetCount = useMemo(
+    () => bets.filter((bet) => bet.userId === resolvedSelectedUserId).length,
+    [bets, resolvedSelectedUserId],
+  )
+  const appThemeStyle = useMemo<CSSProperties | undefined>(() => {
+    if (!isGordoUltraDark) {
+      return undefined
     }
 
-    const valid = mainBoardUserView.userIds.filter((userId) =>
-      mainBoardUserOptions.some((user) => user.id === userId),
-    )
-    if (!valid.length) {
-      return mainBoardUserOptions.map((user) => user.id)
-    }
-    return valid
-  }, [mainBoardUserOptions, mainBoardUserView])
-  const mainBoardSelectedUserIdSet = useMemo(
-    () => new Set(mainBoardSelectedUserIds),
-    [mainBoardSelectedUserIds],
-  )
-  const isAllMainBoardUsersSelected =
-    mainBoardUserView.mode === "all" || mainBoardSelectedUserIds.length === mainBoardUserOptions.length
-  const mainBoardViewLabel = useMemo(() => {
-    if (!mainBoardUserOptions.length || isAllMainBoardUsersSelected) {
-      return "All The Lads"
-    }
-    if (mainBoardSelectedUserIds.length === 1) {
-      return mainBoardUserOptions.find((user) => user.id === mainBoardSelectedUserIds[0])?.displayName ?? "1 lad"
-    }
-    return `${mainBoardSelectedUserIds.length} lads selected`
-  }, [isAllMainBoardUsersSelected, mainBoardSelectedUserIds, mainBoardUserOptions])
+    return {
+      "--background": "#000000",
+      "--card": "#000000",
+      "--popover": "#000000",
+      "--sidebar": "#000000",
+    } as CSSProperties
+  }, [isGordoUltraDark])
+  const isMainBoardMeView = mainBoardUserView.mode === "me" && Boolean(resolvedSelectedUserId)
   const mainBoardUsers =
-    isAllMainBoardUsersSelected ? users : users.filter((user) => mainBoardSelectedUserIdSet.has(user.id))
+    isMainBoardMeView ? users.filter((user) => user.id === resolvedSelectedUserId) : users
   const mainBoardBets =
-    isAllMainBoardUsersSelected ? bets : bets.filter((bet) => mainBoardSelectedUserIdSet.has(bet.userId))
+    isMainBoardMeView ? bets.filter((bet) => bet.userId === resolvedSelectedUserId) : bets
   const mainBoardStats =
-    isAllMainBoardUsersSelected
-      ? derivedUserStats
-      : derivedUserStats.filter((entry) => mainBoardSelectedUserIdSet.has(entry.userId))
+    isMainBoardMeView
+      ? derivedUserStats.filter((entry) => entry.userId === resolvedSelectedUserId)
+      : derivedUserStats
   const mainBoardGlobalStats: GlobalStats =
-    isAllMainBoardUsersSelected
+    !isMainBoardMeView
       ? derivedGlobalStats
       : computeGlobalStats(mainBoardBets, mainBoardUsers, nowIso())
+  const mainBoardRaceRanges = useMemo(
+    () => buildRaceOutcomeRanges(races, mainBoardBets),
+    [mainBoardBets, races],
+  )
   const activeTabMeta = TABS.find((tab) => tab.id === activeTab) ?? TABS[0]
   const lastRefreshedLabel = formatLastRefreshed(raceImportRun)
   const effectiveSelectedUserId = resolvedSelectedUserId || identityDraftUserId || users[0]?.id || ""
@@ -241,37 +400,6 @@ export function App() {
     setMobileMenuOpen(false)
   }
 
-  const handleToggleMainBoardUser = (userId: string, checked: boolean | "indeterminate") => {
-    if (!mainBoardUserOptions.length) {
-      return
-    }
-
-    if (mainBoardUserView.mode === "all") {
-      setMainBoardUserView({ mode: "custom", userIds: [userId] })
-      return
-    }
-
-    const next = new Set(mainBoardUserView.userIds.filter((entry) => users.some((user) => user.id === entry)))
-    if (checked === true) {
-      next.add(userId)
-    } else {
-      if (next.size === 1 && next.has(userId)) {
-        return
-      }
-      next.delete(userId)
-    }
-
-    const ordered = mainBoardUserOptions.map((user) => user.id).filter((id) => next.has(id))
-    if (!ordered.length) {
-      return
-    }
-    if (ordered.length === mainBoardUserOptions.length) {
-      setMainBoardUserView({ mode: "all" })
-      return
-    }
-    setMainBoardUserView({ mode: "custom", userIds: ordered })
-  }
-
   async function handleCreateBet(form: BetDraftForm) {
     setActionError(null)
     await createBet(toBetDraft(form), races)
@@ -300,17 +428,25 @@ export function App() {
     await settleRace(raceId)
   }
 
-  async function handleRefreshRaceData() {
-    setActionError(null)
+  async function runRaceRefresh(options?: { clearError?: boolean }) {
+    if (options?.clearError) {
+      setActionError(null)
+    }
     setRefreshingRaceData(true)
     try {
       const payload = await refreshRaceData()
       setRaceImportRun(payload.run)
+      return payload.run
     } catch (refreshError) {
       setActionError(refreshError instanceof Error ? refreshError.message : "Failed to refresh race data")
+      return null
     } finally {
       setRefreshingRaceData(false)
     }
+  }
+
+  async function handleRefreshRaceData() {
+    await runRaceRefresh({ clearError: true })
   }
 
   async function handleGenerateSimulation() {
@@ -348,6 +484,11 @@ export function App() {
     setAdminOpen(true)
   }
 
+  function handleOddsFormatChange(nextFormat: OddsFormat) {
+    setOddsFormat(nextFormat)
+    persistOddsFormat(nextFormat)
+  }
+
   useEffect(() => {
     if (bootstrapping) {
       return
@@ -376,23 +517,6 @@ export function App() {
   }, [hasValidSelectedUser, identityDraftUserId, selectedUserId, users])
 
   useEffect(() => {
-    if (users.length === 0) {
-      return
-    }
-    if (mainBoardUserView.mode === "all") {
-      return
-    }
-    const valid = mainBoardUserView.userIds.filter((userId) => users.some((user) => user.id === userId))
-    if (!valid.length) {
-      setMainBoardUserView({ mode: "all" })
-      return
-    }
-    if (valid.length !== mainBoardUserView.userIds.length) {
-      setMainBoardUserView({ mode: "custom", userIds: valid })
-    }
-  }, [mainBoardUserView, users])
-
-  useEffect(() => {
     const intervalId = window.setInterval(() => {
       setNowTickMs(Date.now())
     }, 1000)
@@ -401,6 +525,110 @@ export function App() {
       window.clearInterval(intervalId)
     }
   }, [])
+
+  useEffect(() => {
+    raceImportRunRef.current = raceImportRun
+  }, [raceImportRun])
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return
+    }
+
+    const handleVisibilityChange = () => {
+      setIsPageVisible(document.visibilityState === "visible")
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (bootstrapping || trackerMode !== "live" || !isPageVisible || refreshingRaceData) {
+      return
+    }
+
+    let cancelled = false
+    let timeoutId: number | null = null
+
+    const scheduleNextCheck = (delayMs: number) => {
+      if (cancelled) {
+        return
+      }
+      timeoutId = window.setTimeout(() => {
+        void evaluateAutoRefresh()
+      }, delayMs)
+    }
+
+    const evaluateAutoRefresh = async () => {
+      if (cancelled || typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return
+      }
+
+      const targetRace = resolveAutoRefreshRace(races)
+      if (!targetRace) {
+        return
+      }
+
+      const nowMs = Date.now()
+      const { intervalMs, nextBoundaryAtMs } = resolveAutoRefreshInterval(targetRace.offTime, nowMs)
+
+      let latestRun = raceImportRunRef.current
+      try {
+        latestRun = await getLastRaceImportRun()
+        if (!cancelled) {
+          setRaceImportRun(latestRun)
+        }
+      } catch {
+        // keep the local run snapshot if the status check fails
+      }
+
+      const nextEligibleAtMs = resolveNextEligibleRefreshAt(latestRun, intervalMs, nowMs)
+      if (nextEligibleAtMs <= nowMs) {
+        const run = await runRaceRefresh()
+        if (cancelled) {
+          return
+        }
+
+        const completedAtMs = run?.completedAt ? new Date(run.completedAt).getTime() : Date.now()
+        scheduleNextCheck(
+          resolveNextAutoRefreshDelay({
+            nowMs: completedAtMs,
+            intervalMs,
+            nextEligibleAtMs: completedAtMs + intervalMs,
+            nextBoundaryAtMs,
+          }),
+        )
+        return
+      }
+
+      scheduleNextCheck(
+        resolveNextAutoRefreshDelay({
+          nowMs,
+          intervalMs,
+          nextEligibleAtMs,
+          nextBoundaryAtMs,
+        }),
+      )
+    }
+
+    void evaluateAutoRefresh()
+
+    return () => {
+      cancelled = true
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId)
+      }
+    }
+  }, [
+    bootstrapping,
+    isPageVisible,
+    races,
+    refreshingRaceData,
+    trackerMode,
+  ])
 
   // --- Loading state ---
   if (bootstrapping) {
@@ -415,7 +643,7 @@ export function App() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background" style={appThemeStyle}>
       <div className="md:grid md:min-h-screen md:grid-cols-[260px_minmax(0,1fr)]">
         {/* ─── Desktop Sidebar ─── */}
         <aside className="hidden border-r border-border/60 bg-card/40 md:block">
@@ -429,18 +657,6 @@ export function App() {
             </div>
 
             {/* User identity */}
-            {selectedUserDisplayName ? (
-              <div className="mb-5 flex items-center gap-2.5 rounded-xl border border-border/50 bg-muted/20 px-3 py-2.5">
-                <UserAvatar name={selectedUserDisplayName} />
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold">{selectedUserDisplayName}</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    {bets.filter((b) => b.userId === resolvedSelectedUserId).length} bets placed
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
             {/* Nav tabs */}
             <nav className="space-y-1">
               {TABS.map((tab) => (
@@ -459,25 +675,55 @@ export function App() {
                   {tab.label}
                 </button>
               ))}
-            </nav>
 
-            {/* Next race countdown */}
-            {nextRaceInfo.countdown ? (
-              <div className="mt-5 rounded-xl border border-border/50 bg-muted/20 px-3 py-2.5">
-                <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                  <Clock className="size-3" />
-                  Next race
+              {nextRaceInfo.countdown ? (
+                <div className="mt-3 rounded-xl border border-border/50 bg-muted/20 px-3 py-2.5">
+                  <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <Clock className="size-3" />
+                    Next race
+                  </div>
+                  <div className="mt-1 text-sm font-semibold">{nextRaceInfo.label}</div>
+                  <div className="text-xs text-muted-foreground">in {nextRaceInfo.countdown}</div>
                 </div>
-                <div className="mt-1 text-sm font-semibold">{nextRaceInfo.label}</div>
-                <div className="text-xs text-muted-foreground">in {nextRaceInfo.countdown}</div>
-              </div>
-            ) : null}
+              ) : null}
+            </nav>
 
             {/* Spacer */}
             <div className="flex-1" />
 
             {/* Admin */}
             <div className="space-y-2">
+              <div className="rounded-xl border border-border/50 bg-muted/10 p-2">
+                <div className="mb-2 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Odds Display
+                </div>
+                <div className="inline-flex w-full items-center rounded-lg border border-input bg-muted/20 p-1">
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex-1 rounded-md px-3 py-1.5 text-sm transition-colors",
+                      oddsFormat === "fractional"
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                    onClick={() => handleOddsFormatChange("fractional")}
+                  >
+                    Fractional
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex-1 rounded-md px-3 py-1.5 text-sm transition-colors",
+                      oddsFormat === "decimal"
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                    onClick={() => handleOddsFormatChange("decimal")}
+                  >
+                    Decimal
+                  </button>
+                </div>
+              </div>
               {trackerMode === "simulated" ? (
                 <Badge variant="outline" className="w-full justify-center">Simulated Mode</Badge>
               ) : null}
@@ -509,14 +755,15 @@ export function App() {
               <div className="min-w-0 text-center">
                 <div className="text-sm font-bold tracking-tight">Ca$h Lad$</div>
               </div>
-              {nextRaceInfo.countdown ? (
-                <div className="flex items-center gap-1.5 rounded-lg bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
-                  <Clock className="size-3" />
-                  <span className="font-medium">{nextRaceInfo.countdown}</span>
-                </div>
-              ) : (
-                <div className="w-9" />
-              )}
+              <div className="shrink-0">
+                <UserSwitcher
+                  users={users}
+                  selectedUserId={resolvedSelectedUserId}
+                  onSwitchUser={handleSwitchUser}
+                  betCount={selectedUserBetCount}
+                  compact
+                />
+              </div>
             </div>
             {trackerMode === "simulated" ? (
               <div className="mt-1.5 text-center">
@@ -533,12 +780,12 @@ export function App() {
                 <div>
                   <h2 className="text-lg font-bold tracking-tight">{activeTabMeta.label}</h2>
                 </div>
-                {nextRaceInfo.countdown ? (
-                  <div className="flex items-center gap-2 rounded-lg bg-muted/20 px-3 py-1.5 text-xs text-muted-foreground">
-                    <Clock className="size-3.5" />
-                    <span>Next: <span className="font-medium text-foreground">{nextRaceInfo.label}</span> in {nextRaceInfo.countdown}</span>
-                  </div>
-                ) : null}
+                <UserSwitcher
+                  users={users}
+                  selectedUserId={resolvedSelectedUserId}
+                  onSwitchUser={handleSwitchUser}
+                  betCount={selectedUserBetCount}
+                />
               </div>
 
               {(error || actionError) && (
@@ -562,39 +809,35 @@ export function App() {
                 <div className="space-y-4">
                   <StatsCards
                     title="Cashboard"
-                    middleContent={<PnlCandlesPanel bets={mainBoardBets} races={races} />}
-                    headerRight={
-                      <DropdownMenu>
-                        <DropdownMenuTrigger
-                          className="inline-flex h-9 min-w-[150px] items-center justify-between gap-2 rounded-lg border border-input bg-muted/20 px-3 text-sm transition-colors hover:bg-muted/40"
+                    middleContent={<PnlCandlesPanel raceRanges={mainBoardRaceRanges} />}
+                    headerRight={(
+                      <div className="inline-flex h-9 items-center rounded-lg border border-input bg-muted/20 p-1">
+                        <button
+                          type="button"
+                          className={cn(
+                            "rounded-md px-3 py-1 text-sm transition-colors",
+                            mainBoardUserView.mode === "all"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                          onClick={() => setMainBoardUserView({ mode: "all" })}
                         >
-                          <span className="truncate">{mainBoardViewLabel}</span>
-                          <ChevronDown className="size-3.5 text-muted-foreground" />
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-56">
-                          <DropdownMenuCheckboxItem
-                            checked={isAllMainBoardUsersSelected}
-                            onCheckedChange={(checked) => {
-                              if (checked === true) {
-                                setMainBoardUserView({ mode: "all" })
-                              }
-                            }}
-                          >
-                            All The Lads
-                          </DropdownMenuCheckboxItem>
-                          <DropdownMenuSeparator />
-                          {mainBoardUserOptions.map((user) => (
-                            <DropdownMenuCheckboxItem
-                              key={`main-view-user-${user.id}`}
-                              checked={isAllMainBoardUsersSelected ? true : mainBoardSelectedUserIdSet.has(user.id)}
-                              onCheckedChange={(checked) => handleToggleMainBoardUser(user.id, checked)}
-                            >
-                              {user.displayName}
-                            </DropdownMenuCheckboxItem>
-                          ))}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    }
+                          All
+                        </button>
+                        <button
+                          type="button"
+                          className={cn(
+                            "rounded-md px-3 py-1 text-sm transition-colors",
+                            mainBoardUserView.mode === "me"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                          onClick={() => setMainBoardUserView({ mode: "me" })}
+                        >
+                          Me
+                        </button>
+                      </div>
+                    )}
                     stats={mainBoardGlobalStats}
                   />
                   <MainBoard
@@ -602,6 +845,8 @@ export function App() {
                     users={mainBoardUsers}
                     races={races}
                     stats={mainBoardStats}
+                    raceRanges={mainBoardRaceRanges}
+                    outcomeScopeLabel={isMainBoardMeView ? "For Me" : "For The CLs"}
                   />
                 </div>
               ) : null}
@@ -646,19 +891,6 @@ export function App() {
               </button>
             </div>
 
-            {/* User identity */}
-            {selectedUserDisplayName ? (
-              <div className="mb-4 flex items-center gap-2.5 rounded-xl border border-border/50 bg-muted/20 px-3 py-2.5">
-                <UserAvatar name={selectedUserDisplayName} />
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold">{selectedUserDisplayName}</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    {bets.filter((b) => b.userId === resolvedSelectedUserId).length} bets placed
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
             <nav className="space-y-1">
               {TABS.map((tab) => (
                 <button
@@ -679,11 +911,53 @@ export function App() {
                   {tab.label}
                 </button>
               ))}
+
+              {nextRaceInfo.countdown ? (
+                <div className="mt-3 rounded-xl border border-border/50 bg-muted/20 px-3 py-2.5">
+                  <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <Clock className="size-3" />
+                    Next race
+                  </div>
+                  <div className="mt-1 text-sm font-semibold">{nextRaceInfo.label}</div>
+                  <div className="text-xs text-muted-foreground">in {nextRaceInfo.countdown}</div>
+                </div>
+              ) : null}
             </nav>
 
             <div className="flex-1" />
 
             <div className="space-y-2">
+              <div className="rounded-xl border border-border/50 bg-muted/10 p-2">
+                <div className="mb-2 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Odds Display
+                </div>
+                <div className="inline-flex w-full items-center rounded-lg border border-input bg-muted/20 p-1">
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex-1 rounded-md px-3 py-1.5 text-sm transition-colors",
+                      oddsFormat === "fractional"
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                    onClick={() => handleOddsFormatChange("fractional")}
+                  >
+                    Fractional
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex-1 rounded-md px-3 py-1.5 text-sm transition-colors",
+                      oddsFormat === "decimal"
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                    onClick={() => handleOddsFormatChange("decimal")}
+                  >
+                    Decimal
+                  </button>
+                </div>
+              </div>
               {trackerMode === "simulated" ? (
                 <Badge variant="outline" className="w-full justify-center">Simulated Mode</Badge>
               ) : null}
@@ -806,7 +1080,10 @@ export function App() {
                         </option>
                       ))}
                     </select>
-                    <div className="text-xs text-muted-foreground">Last refreshed: {lastRefreshedLabel}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {selectedUserDisplayName ? `${selectedUserDisplayName} selected. ` : ""}
+                      Last refreshed: {lastRefreshedLabel}
+                    </div>
                   </div>
                   <Button
                     type="button"

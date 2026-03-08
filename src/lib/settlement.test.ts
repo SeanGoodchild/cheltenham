@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  buildRaceOutcomeRanges,
   calculateBetPotentialReturn,
   calculateBetReturn,
   computeGlobalStats,
@@ -106,6 +107,19 @@ describe("settlement rules", () => {
     expect(calculateBetReturn(bet)).toBe(0)
   })
 
+  it("treats an accumulator place leg as a dead leg", () => {
+    const bet = baseBet({
+      betType: "accumulator",
+      legs: [
+        { raceId: "r1", selectionName: "Horse A", decimalOdds: 2, result: "place" },
+        { raceId: "r2", selectionName: "Horse C", decimalOdds: 3, result: "pending" },
+      ],
+    })
+
+    expect(isBetSettleable(bet)).toBe(true)
+    expect(calculateBetReturn(bet)).toBe(0)
+  })
+
   it("derives accumulator lockAt from earliest race", () => {
     const lockAt = deriveLockAt(
       [
@@ -178,5 +192,147 @@ describe("stats calculations", () => {
     expect(global.totalStaked).toBe(30)
     expect(global.totalReturns).toBe(25)
     expect(global.roasPct).toBe(250)
+  })
+})
+
+describe("race outcome ranges", () => {
+  const settledRace: Race = {
+    id: "r1",
+    season: "2026",
+    day: "Tuesday",
+    offTime: "2026-03-10T13:30:00.000Z",
+    course: "Cheltenham",
+    name: "Supreme",
+    runners: ["Horse A", "Horse B", "Horse C"],
+    status: "settled",
+    lifecycle: "complete",
+    result: { winner: "Horse A", placed: ["Horse A", "Horse B", "Horse C"], source: "manual" },
+  }
+
+  const nextRace: Race = {
+    id: "r2",
+    season: "2026",
+    day: "Tuesday",
+    offTime: "2026-03-10T14:10:00.000Z",
+    course: "Cheltenham",
+    name: "Arkle",
+    runners: ["Horse D", "Horse E", "Horse F", "Horse G"],
+    status: "scheduled",
+    lifecycle: "upcoming",
+    result: { winner: undefined, placed: [], source: "manual" },
+  }
+
+  it("builds historical and next-race ranges for singles", () => {
+    const settledBet = baseBet({
+      id: "b-settled",
+      status: "settled",
+      totalReturn: 20,
+      profitLoss: 10,
+      legs: [{ raceId: "r1", selectionName: "Horse A", decimalOdds: 2, result: "win" }],
+    })
+    const nextBet = baseBet({
+      id: "b-next",
+      legs: [{ raceId: "r2", selectionName: "Horse D", decimalOdds: 3, result: "pending" }],
+    })
+
+    const ranges = buildRaceOutcomeRanges([settledRace, nextRace], [settledBet, nextBet])
+
+    expect(ranges).toHaveLength(2)
+    expect(ranges[0]).toMatchObject({
+      raceId: "r1",
+      openPnl: 0,
+      actualClosePnl: 10,
+      bestDelta: 10,
+      worstDelta: -10,
+      isForecast: false,
+    })
+    expect(ranges[1]).toMatchObject({
+      raceId: "r2",
+      openPnl: 10,
+      actualClosePnl: undefined,
+      bestDelta: 20,
+      worstDelta: -10,
+      bestClosePnl: 30,
+      worstClosePnl: 0,
+      isForecast: true,
+    })
+  })
+
+  it("handles each-way win, place, and lose outcomes", () => {
+    const ewBet = baseBet({
+      betType: "each_way",
+      stakeTotal: 10,
+      legs: [{ raceId: "r2", selectionName: "Horse D", decimalOdds: 6, result: "pending" }],
+      ewTerms: { placesPaid: 3, placeFraction: 0.2 },
+    })
+
+    const ranges = buildRaceOutcomeRanges([settledRace, nextRace], [ewBet])
+    const nextRange = ranges.at(-1)
+
+    expect(nextRange).toMatchObject({
+      raceId: "r2",
+      bestDelta: 30,
+      worstDelta: -10,
+      bestClosePnl: 30,
+      worstClosePnl: -10,
+    })
+  })
+
+  it("only settles accumulators on the final race and fixes earlier completed legs", () => {
+    const winningEarlierLegAcca = baseBet({
+      betType: "accumulator",
+      stakeTotal: 5,
+      legs: [
+        { raceId: "r1", selectionName: "Horse A", decimalOdds: 2, result: "pending" },
+        { raceId: "r2", selectionName: "Horse D", decimalOdds: 3, result: "pending" },
+      ],
+    })
+
+    const losingEarlierLegAcca = baseBet({
+      id: "b-loser",
+      betType: "accumulator",
+      stakeTotal: 5,
+      legs: [
+        { raceId: "r1", selectionName: "Horse B", decimalOdds: 2, result: "pending" },
+        { raceId: "r2", selectionName: "Horse D", decimalOdds: 3, result: "pending" },
+      ],
+    })
+
+    const ranges = buildRaceOutcomeRanges(
+      [settledRace, nextRace],
+      [winningEarlierLegAcca, losingEarlierLegAcca],
+    )
+    const nextRange = ranges.at(-1)
+
+    expect(nextRange).toMatchObject({
+      raceId: "r2",
+      bestDelta: 20,
+      worstDelta: -10,
+      bestClosePnl: 20,
+      worstClosePnl: -10,
+    })
+  })
+
+  it("ignores non-race-linked other bets and yields zero-width ranges when needed", () => {
+    const otherBet = baseBet({
+      betType: "other",
+      betName: "Lucky football punt",
+      legs: [{ raceId: "__other__", selectionName: "Anything", decimalOdds: 2, result: "pending" }],
+    })
+
+    const ranges = buildRaceOutcomeRanges([settledRace, nextRace], [otherBet])
+
+    expect(ranges[0]).toMatchObject({
+      raceId: "r1",
+      bestDelta: 0,
+      worstDelta: 0,
+      bestClosePnl: 0,
+      worstClosePnl: 0,
+    })
+    expect(ranges[1]).toMatchObject({
+      raceId: "r2",
+      bestDelta: 0,
+      worstDelta: 0,
+    })
   })
 })

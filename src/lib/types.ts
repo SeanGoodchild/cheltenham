@@ -56,7 +56,7 @@ export type Race = {
   course: "Cheltenham"
   name: string
   externalRaceId?: number
-  source?: "cloudfront" | "manual"
+  source?: "cloudfront" | "sportinglife" | "manual"
   importMeta?: {
     etag?: string
     importedAt: string

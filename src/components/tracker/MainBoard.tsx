@@ -1,7 +1,9 @@
 import { ArrowDownRight, ArrowUpRight, Clock, Minus } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { formatCurrency, formatOdds, formatPercent } from "@/lib/format"
+import { formatCurrency, formatMarketOdds, formatPercent } from "@/lib/format"
+import { normalizeHorseName } from "@/lib/horse"
+import type { RaceOutcomeRange } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
 import type { Bet, Race, UserProfile, UserStats } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -11,6 +13,48 @@ type MainBoardProps = {
   users: UserProfile[]
   races: Race[]
   stats: UserStats[]
+  raceRanges: RaceOutcomeRange[]
+  outcomeScopeLabel: string
+}
+
+type RunnerBackerDetail = {
+  betId: string
+  userId: string
+  userDisplayName: string
+  userAvatarSrc?: string
+  betType: Bet["betType"]
+  stakeTotal: number
+}
+
+type NextRaceRunnerRow = {
+  horseName: string
+  horseUid?: number
+  oddsLabel?: string
+  oddsValue?: number
+  isFavourite: boolean
+  backers: RunnerBackerDetail[]
+}
+
+const USER_AVATAR_SRC_BY_ID: Record<string, string> = {
+  fabs: "/avatars/Fabs.png",
+  ru: "/avatars/Ru.png",
+  shiblen: "/avatars/Shiblen.png",
+  howes: "/avatars/Howes.png",
+  steve: "/avatars/Steve.png",
+  sean: "/avatars/Sean.png",
+  gordo: "/avatars/Gordo.png",
+  tim: "/avatars/Tim.png",
+  wilks: "/avatars/Wilkes.png",
+  grandad_packet: "/avatars/Grandad Packet.png",
+}
+
+function getUserAvatarSrc(userId: string): string | undefined {
+  return USER_AVATAR_SRC_BY_ID[userId]
+}
+
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  return parts.slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "?"
 }
 
 function getSettlementRaceId(bet: Bet, races: Race[]): string | null {
@@ -51,7 +95,177 @@ function buildRankMap(entries: Array<{ userId: string; displayName: string; prof
   return rankByUser
 }
 
-function CurrentRaceCard({ races, bets }: { races: Race[]; bets: Bet[] }) {
+function extractScenarioHorseName(scenario: string): string {
+  const trimmed = scenario.trim()
+  if (!trimmed) {
+    return ""
+  }
+
+  const winsIndex = trimmed.toLowerCase().indexOf(" wins")
+  if (winsIndex > 0) {
+    return trimmed.slice(0, winsIndex).trim()
+  }
+
+  const commaIndex = trimmed.indexOf(",")
+  if (commaIndex > 0) {
+    return trimmed.slice(0, commaIndex).trim()
+  }
+
+  return trimmed
+}
+
+function buildNextRaceRunnerRows(nextRace: Race, bets: Bet[], users: UserProfile[]): NextRaceRunnerRow[] {
+  const usersById = new Map(users.map((user) => [user.id, user]))
+  const favouriteName = normalizeHorseName(nextRace.marketFavourite?.horseName ?? "")
+  const oddsByUid = new Map<number, string>()
+  const oddsByName = new Map<string, string>()
+  const oddsValueByUid = new Map<number, number>()
+  const oddsValueByName = new Map<string, number>()
+
+  nextRace.oddsSnapshot?.forEach((entry) => {
+    const label = formatMarketOdds(entry.bestFractional, entry.bestDecimal)
+    if (typeof entry.horseUid === "number") {
+      oddsByUid.set(entry.horseUid, label)
+      oddsValueByUid.set(entry.horseUid, entry.bestDecimal)
+    }
+    oddsByName.set(normalizeHorseName(entry.horseName), label)
+    oddsValueByName.set(normalizeHorseName(entry.horseName), entry.bestDecimal)
+  })
+
+  const runners =
+    nextRace.runnersDetailed?.length
+      ? nextRace.runnersDetailed
+          .filter((runner) => !runner.nonRunner)
+          .map((runner) => ({
+            horseName: runner.horseName,
+            horseUid: runner.horseUid,
+          }))
+      : nextRace.runners.map((horseName) => ({ horseName, horseUid: undefined }))
+
+  return runners.map((runner) => {
+    const normalizedRunner = normalizeHorseName(runner.horseName)
+    const backers = bets.flatMap((bet) => {
+      const user = usersById.get(bet.userId)
+      if (!user) {
+        return []
+      }
+
+      const hasMatchingLeg = bet.legs.some((leg) => {
+        if (leg.raceId !== nextRace.id) {
+          return false
+        }
+        if (typeof runner.horseUid === "number" && typeof leg.horseUid === "number") {
+          return leg.horseUid === runner.horseUid
+        }
+        return normalizeHorseName(leg.selectionName) === normalizedRunner
+      })
+
+      if (!hasMatchingLeg) {
+        return []
+      }
+
+      return [{
+        betId: bet.id,
+        userId: user.id,
+        userDisplayName: user.displayName,
+        userAvatarSrc: getUserAvatarSrc(user.id),
+        betType: bet.betType,
+        stakeTotal: bet.stakeTotal,
+      }]
+    })
+
+    return {
+      horseName: runner.horseName,
+      horseUid: runner.horseUid,
+      oddsLabel:
+        (typeof runner.horseUid === "number" ? oddsByUid.get(runner.horseUid) : undefined) ??
+        oddsByName.get(normalizedRunner),
+      oddsValue:
+        (typeof runner.horseUid === "number" ? oddsValueByUid.get(runner.horseUid) : undefined) ??
+        oddsValueByName.get(normalizedRunner),
+      isFavourite:
+        (typeof runner.horseUid === "number" && runner.horseUid === nextRace.marketFavourite?.horseUid) ||
+        (Boolean(favouriteName) && normalizedRunner === favouriteName),
+      backers,
+    }
+  }).sort((a, b) => {
+    const aOdds = typeof a.oddsValue === "number" ? a.oddsValue : Number.POSITIVE_INFINITY
+    const bOdds = typeof b.oddsValue === "number" ? b.oddsValue : Number.POSITIVE_INFINITY
+
+    if (aOdds !== bOdds) {
+      return aOdds - bOdds
+    }
+
+    if (a.isFavourite !== b.isFavourite) {
+      return a.isFavourite ? -1 : 1
+    }
+
+    return a.horseName.localeCompare(b.horseName)
+  })
+}
+
+function BackerCluster({ backers }: { backers: RunnerBackerDetail[] }) {
+  if (!backers.length) {
+    return null
+  }
+
+  return (
+    <div className="group relative flex items-center">
+      <button
+        type="button"
+        className="flex items-center -space-x-1.5 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+        aria-label={`Backed by ${backers.map((entry) => entry.userDisplayName).join(", ")}`}
+      >
+        {backers.map((entry) => (
+          <span
+            key={`${entry.betId}-${entry.userId}`}
+            className="inline-flex rounded-full bg-background"
+          >
+            <span
+              className="inline-flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border border-background bg-muted/20 text-[10px] font-semibold text-foreground shadow-sm"
+              title={entry.userDisplayName}
+            >
+              {entry.userAvatarSrc ? (
+                <img src={entry.userAvatarSrc} alt={entry.userDisplayName} className="h-full w-full object-contain" />
+              ) : (
+                <span>{getInitials(entry.userDisplayName)}</span>
+              )}
+            </span>
+          </span>
+        ))}
+      </button>
+
+      <div className="pointer-events-none absolute right-0 top-full z-20 mt-2 hidden min-w-[220px] rounded-xl border border-border/60 bg-card px-3 py-2 text-left text-xs shadow-2xl group-hover:block group-focus-within:block">
+        <div className="mb-2 font-semibold text-foreground">Backed on this horse</div>
+        <div className="space-y-1.5">
+          {backers.map((entry) => (
+            <div key={`tooltip-${entry.betId}-${entry.userId}`} className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate font-medium text-foreground">{entry.userDisplayName}</div>
+                <div className="text-[11px] text-muted-foreground">{entry.betType}</div>
+              </div>
+              <div className="tabular-nums text-foreground">{formatCurrency(entry.stakeTotal)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CurrentRaceCard({
+  races,
+  bets,
+  raceRanges,
+  users,
+  outcomeScopeLabel,
+}: {
+  races: Race[]
+  bets: Bet[]
+  raceRanges: RaceOutcomeRange[]
+  users: UserProfile[]
+  outcomeScopeLabel: string
+}) {
   const nextRace = races
     .filter((race) => race.status !== "settled")
     .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0]
@@ -68,6 +282,10 @@ function CurrentRaceCard({ races, bets }: { races: Race[]; bets: Bet[] }) {
 
   const raceBets = bets.filter((bet) => bet.legs.some((leg) => leg.raceId === nextRace.id))
   const raceStaked = raceBets.reduce((acc, bet) => acc + bet.stakeTotal, 0)
+  const nextRaceRange = raceRanges.find((entry) => entry.raceId === nextRace.id)
+  const runnerRows = buildNextRaceRunnerRows(nextRace, bets, users)
+  const bestHorseName = nextRaceRange ? extractScenarioHorseName(nextRaceRange.bestScenario) : ""
+  const worstHorseName = nextRaceRange ? extractScenarioHorseName(nextRaceRange.worstScenario) : ""
 
   return (
     <Card className="shadow-xs">
@@ -86,11 +304,51 @@ function CurrentRaceCard({ races, bets }: { races: Race[]; bets: Bet[] }) {
             <Badge variant="outline" className="tabular-nums">{formatCurrency(raceStaked)}</Badge>
           </div>
         </div>
-        {nextRace.marketFavourite ? (
-          <div className="mt-3 flex items-center gap-2 rounded-lg border border-border/40 bg-muted/15 px-3 py-2 text-xs text-muted-foreground">
-            <span>Fav:</span>
-            <span className="font-medium text-foreground">{nextRace.marketFavourite.horseName}</span>
-            <span>{nextRace.marketFavourite.bestFractional} ({formatOdds(nextRace.marketFavourite.bestDecimal)})</span>
+        {nextRaceRange ? (
+          <div className="mt-3 rounded-lg border border-border/40 bg-muted/15 px-3 py-3">
+            <div className="grid gap-2 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">Best winner ({outcomeScopeLabel})</span>
+                <div className="text-right">
+                  <div className="font-semibold tabular-nums text-primary">{formatCurrency(nextRaceRange.bestClosePnl)}</div>
+                  {bestHorseName ? (
+                    <div className="text-[11px] text-foreground">{bestHorseName}</div>
+                  ) : null}
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">Worst winner ({outcomeScopeLabel})</span>
+                <div className="text-right">
+                  <div className="font-semibold tabular-nums text-destructive">{formatCurrency(nextRaceRange.worstClosePnl)}</div>
+                  {worstHorseName ? (
+                    <div className="text-[11px] text-foreground">{worstHorseName}</div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {runnerRows.length > 0 ? (
+          <div className="mt-3 rounded-lg border border-border/40 bg-muted/10">
+            <div className="border-b border-border/40 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Field
+            </div>
+            <div className="divide-y divide-border/30">
+              {runnerRows.map((runner) => (
+                <div key={`${runner.horseUid ?? runner.horseName}`} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium text-foreground">{runner.horseName}</span>
+                      {runner.isFavourite ? <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Fav</Badge> : null}
+                    </div>
+                    {runner.oddsLabel ? (
+                      <div className="text-[11px] text-muted-foreground">{runner.oddsLabel}</div>
+                    ) : null}
+                  </div>
+                  <BackerCluster backers={runner.backers} />
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
       </CardContent>
@@ -128,11 +386,30 @@ function RankChange({ delta, hasSettledRace }: { delta: number; hasSettledRace: 
   )
 }
 
+function formatLeagueCurrency(value: number, userId: string) {
+  const formatted = formatCurrency(value)
+  if (userId !== "gordo") {
+    return formatted
+  }
+
+  if (formatted.startsWith("-£")) {
+    return `-£00${formatted.slice(2)}`
+  }
+
+  if (formatted.startsWith("£")) {
+    return `£00${formatted.slice(1)}`
+  }
+
+  return formatted
+}
+
 export function MainBoard({
   bets,
   users,
   races,
   stats,
+  raceRanges,
+  outcomeScopeLabel,
 }: MainBoardProps) {
   const statsByUser = new Map(stats.map((entry) => [entry.userId, entry]))
   const latestSettledRace = races
@@ -203,7 +480,13 @@ export function MainBoard({
 
   return (
     <div className="space-y-4">
-      <CurrentRaceCard races={races} bets={bets} />
+      <CurrentRaceCard
+        races={races}
+        bets={bets}
+        raceRanges={raceRanges}
+        users={users}
+        outcomeScopeLabel={outcomeScopeLabel}
+      />
 
       <Card className="shadow-xs">
         <CardHeader>
@@ -257,19 +540,19 @@ export function MainBoard({
                         <RankChange delta={rankDelta} hasSettledRace={Boolean(latestSettledRace)} />
                       </td>
                       <td className="font-semibold">{user.displayName}</td>
-                      <td className="tabular-nums">{formatCurrency(userStats.totalStaked)}</td>
-                      <td className="tabular-nums">{formatCurrency(userStats.totalReturns)}</td>
+                      <td className="tabular-nums">{formatLeagueCurrency(userStats.totalStaked, user.id)}</td>
+                      <td className="tabular-nums">{formatLeagueCurrency(userStats.totalReturns, user.id)}</td>
                       <td className={cn(
                         "font-semibold tabular-nums",
                         userStats.profitLoss < 0 ? "text-destructive" : "text-primary",
                       )}>
-                        {formatCurrency(userStats.profitLoss)}
+                        {formatLeagueCurrency(userStats.profitLoss, user.id)}
                       </td>
                       <td className="tabular-nums">{formatPercent(userStats.roasPct)}</td>
                       <td className="tabular-nums">{formatPercent(userStats.winPct)}</td>
                       <td className="tabular-nums">{userStats.betsPlaced}</td>
-                      <td className="tabular-nums">{formatCurrency(userStats.biggestWin)}</td>
-                      <td className="tabular-nums">{formatCurrency(userStats.averageStake)}</td>
+                      <td className="tabular-nums">{formatLeagueCurrency(userStats.biggestWin, user.id)}</td>
+                      <td className="tabular-nums">{formatLeagueCurrency(userStats.averageStake, user.id)}</td>
                     </tr>
                   )
                 })}
@@ -302,7 +585,7 @@ export function MainBoard({
                   </div>
                   <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                     <span>{userStats.betsPlaced} bets</span>
-                    <span>Staked {formatCurrency(userStats.totalStaked)}</span>
+                    <span>Staked {formatLeagueCurrency(userStats.totalStaked, user.id)}</span>
                     <span>Win {formatPercent(userStats.winPct)}</span>
                   </div>
                 </div>
@@ -311,7 +594,7 @@ export function MainBoard({
                     "text-sm font-bold tabular-nums",
                     userStats.profitLoss < 0 ? "text-destructive" : "text-primary",
                   )}>
-                    {formatCurrency(userStats.profitLoss)}
+                    {formatLeagueCurrency(userStats.profitLoss, user.id)}
                   </div>
                   <div className="text-[10px] text-muted-foreground">P/L</div>
                 </div>

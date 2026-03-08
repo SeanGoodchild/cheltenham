@@ -1,5 +1,6 @@
 import { applicationDefault, cert, getApps, initializeApp } from "firebase-admin/app"
 import { getFirestore, type Firestore } from "firebase-admin/firestore"
+import { readFile } from "node:fs/promises"
 
 import {
   APP_TIMEZONE,
@@ -8,6 +9,10 @@ import {
   EMPTY_RACE_RESULT,
   FIRESTORE_ROOT,
 } from "../src/lib/constants.js"
+import {
+  parseSportingLifeRacePageHtml,
+  parseSportingLifeRaceUrl,
+} from "../src/lib/sportingLife.js"
 import type {
   Bet,
   BetLeg,
@@ -25,14 +30,18 @@ import type {
 
 const PORT = Number(process.env.PORT ?? 3001)
 const APP_ORIGIN = process.env.APP_ORIGIN ?? "http://localhost:5173"
-const RACE_SOURCE_URL =
-  process.env.CHELTHENHAM_RACE_SOURCE_URL ?? "https://d32ycw3m3nm1tb.cloudfront.net/cheltenham2026data.json"
 const IMPORT_LOCK_STALE_MINUTES = Number(process.env.IMPORT_LOCK_STALE_MINUTES ?? 10)
 const IRISHRACING_BASE_URL = process.env.IRISHRACING_BASE_URL ?? "https://www.irishracing.com/cheltenham/odds"
 const ODDS_IMPORT_TIMEOUT_MS = Number(process.env.ODDS_IMPORT_TIMEOUT_MS ?? 8000)
 const ODDS_IMPORT_CONCURRENCY = Number(process.env.ODDS_IMPORT_CONCURRENCY ?? 2)
 const ODDS_IMPORT_USER_AGENT =
   process.env.ODDS_IMPORT_USER_AGENT ?? "CheltenhamBetTracker/1.0 (+manual-refresh)"
+const SPORTING_LIFE_IMPORT_TIMEOUT_MS = Number(process.env.SPORTING_LIFE_IMPORT_TIMEOUT_MS ?? 8000)
+const SPORTING_LIFE_USER_AGENT =
+  process.env.SPORTING_LIFE_USER_AGENT ??
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+const SPORTING_LIFE_RACE_URLS_FILE = new URL("../public/race_urls.txt", import.meta.url)
+const SIMULATED_RACE_COUNT_BEFORE_GOLD_CUP = 25
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN?.trim() ?? ""
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID?.trim() ?? ""
 
@@ -84,29 +93,6 @@ type ManualOtherSettleInput = {
 
 type TestRaceMessageInput = {
   raceId?: string
-}
-
-type CloudfrontRunner = {
-  horse_uid?: number
-  horse_name?: string
-  non_runner?: boolean
-  jockey_name?: string | null
-  trainer_name?: string | null
-  draw?: number | null
-}
-
-type CloudfrontRace = {
-  race_instance_uid?: number
-  race_instance_title?: string
-  race_datetime?: string
-  course_style_name?: string
-  finished?: boolean
-  API_runners?: CloudfrontRunner[]
-  fast_results?: unknown[]
-}
-
-type CloudfrontDay = {
-  races?: CloudfrontRace[]
 }
 
 type RaceImportSummary = {
@@ -1078,7 +1064,10 @@ function mapRaceDoc(raw: Record<string, unknown>, id: string): Race {
         : Number.isFinite(Number(raw.externalRaceId))
           ? Number(raw.externalRaceId)
           : undefined,
-    source: raw.source === "cloudfront" ? "cloudfront" : "manual",
+    source:
+      raw.source === "cloudfront" || raw.source === "sportinglife"
+        ? raw.source
+        : "manual",
     importMeta:
       typeof importMetaRaw.importedAt === "string" &&
       typeof importMetaRaw.sourceUrl === "string" &&
@@ -1240,11 +1229,16 @@ async function generateRaceSimulation(seedInput?: string): Promise<{
   const runId = `sim_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const seed = (seedInput ?? runId).trim() || runId
   const nextRandom = seededRandomFactory(seed)
+  const racesToSimulate = sourceRaces.slice(0, SIMULATED_RACE_COUNT_BEFORE_GOLD_CUP)
 
   const batch = db.batch()
   let racesSimulated = 0
+  const existingSimulatedSnapshot = await simulatedRacesCol(db).get()
+  existingSimulatedSnapshot.docs.forEach((entry) => {
+    batch.delete(entry.ref)
+  })
 
-  for (const race of sourceRaces) {
+  for (const race of racesToSimulate) {
     const activeRunners = (race.runnersDetailed ?? [])
       .filter((runner) => !runner.nonRunner)
       .map((runner) => runner.horseName)
@@ -1995,115 +1989,41 @@ async function releaseRaceImportLock(input: {
     )
 }
 
-function normalizeRunnersDetailed(runners: CloudfrontRunner[] | undefined): NonNullable<Race["runnersDetailed"]> {
-  if (!Array.isArray(runners)) {
-    return []
-  }
-
+async function loadSportingLifeRaceUrls(): Promise<string[]> {
+  const raw = await readFile(SPORTING_LIFE_RACE_URLS_FILE, "utf8")
   const seen = new Set<string>()
-  const normalized: NonNullable<Race["runnersDetailed"]> = []
 
-  runners.forEach((runner) => {
-    const horseName = String(runner.horse_name ?? "").trim()
-    if (!horseName) {
-      return
-    }
-
-    const horseUid = Number(runner.horse_uid)
-    const key = Number.isFinite(horseUid)
-      ? `uid:${horseUid}`
-      : `name:${normalizeHorseName(horseName)}`
-
-    if (seen.has(key)) {
-      return
-    }
-    seen.add(key)
-
-    normalized.push({
-      horseUid: Number.isFinite(horseUid) ? horseUid : undefined,
-      horseName: runnerToDisplayName(horseName),
-      nonRunner: Boolean(runner.non_runner),
-      jockeyName: typeof runner.jockey_name === "string" ? runner.jockey_name : undefined,
-      trainerName: typeof runner.trainer_name === "string" ? runner.trainer_name : undefined,
-      draw: Number.isFinite(Number(runner.draw)) ? Number(runner.draw) : undefined,
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((url) => {
+      if (seen.has(url)) {
+        return false
+      }
+      seen.add(url)
+      return true
     })
-  })
-
-  return normalized
 }
 
-function parseFastResults(
-  race: CloudfrontRace,
-): { winner: string; placed: string[] } | null {
-  if (!race.finished) {
-    return null
-  }
+async function fetchSportingLifePage(url: string): Promise<string> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), SPORTING_LIFE_IMPORT_TIMEOUT_MS)
 
-  if (!Array.isArray(race.fast_results) || race.fast_results.length === 0) {
-    return null
-  }
-
-  const ranked: Array<{ name: string; position: number; index: number }> = []
-  race.fast_results.forEach((entry, index) => {
-    if (typeof entry === "string") {
-      const cleaned = entry.trim()
-      if (!cleaned) {
-        return
-      }
-      const prefixed = cleaned.match(/^(\d+)\s*[-.)]?\s*(.+)$/)
-      const position = prefixed ? Number(prefixed[1]) : index + 1
-      const name = prefixed ? prefixed[2] : cleaned
-      ranked.push({ name: runnerToDisplayName(name), position, index })
-      return
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": SPORTING_LIFE_USER_AGENT,
+        Accept: "text/html,application/xhtml+xml",
+      },
+    })
+    if (!response.ok) {
+      throw new Error(`Sporting Life request failed (${response.status})`)
     }
-
-    if (entry && typeof entry === "object") {
-      const row = entry as Record<string, unknown>
-      const nameRaw =
-        (row.horse_name as string | undefined) ??
-        (row.horseName as string | undefined) ??
-        (row.name as string | undefined) ??
-        (row.runner_name as string | undefined) ??
-        (row.selection as string | undefined)
-      if (!nameRaw) {
-        return
-      }
-      const positionRaw = Number(
-        row.pos ?? row.position ?? row.placing ?? row.rank ?? index + 1,
-      )
-      ranked.push({
-        name: runnerToDisplayName(nameRaw),
-        position: Number.isFinite(positionRaw) ? positionRaw : index + 1,
-        index,
-      })
-    }
-  })
-
-  ranked.sort((a, b) => {
-    if (a.position !== b.position) {
-      return a.position - b.position
-    }
-    return a.index - b.index
-  })
-
-  const placed: string[] = []
-  const seen = new Set<string>()
-  ranked.forEach((entry) => {
-    const normalized = normalizeHorseName(entry.name)
-    if (!normalized || seen.has(normalized)) {
-      return
-    }
-    seen.add(normalized)
-    placed.push(entry.name)
-  })
-
-  if (!placed.length) {
-    return null
-  }
-
-  return {
-    winner: placed[0],
-    placed,
+    return await response.text()
+  } finally {
+    clearTimeout(timeoutId)
   }
 }
 
@@ -2450,39 +2370,45 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
     { merge: true },
   )
 
-  let sourceEtag = lockState.sourceEtag
+  const sourceEtag = lockState.sourceEtag
   let sourcePayloadHash = lockState.sourcePayloadHash
 
   try {
-    const headers = new Headers()
-    if (lockState.sourceEtag) {
-      headers.set("If-None-Match", lockState.sourceEtag)
+    const raceUrls = await loadSportingLifeRaceUrls()
+    if (raceUrls.length === 0) {
+      throw new Error("Sporting Life race URL list is empty")
     }
-    const response = await fetch(RACE_SOURCE_URL, { headers })
-    let cloudfrontChanged = false
-    let racesInput: CloudfrontRace[] = []
 
-    if (response.status !== 304) {
-      if (!response.ok) {
-        throw new Error(`Race source request failed (${response.status})`)
-      }
+    const sourceParts: string[] = []
+    const parsedPages: Array<{
+      sourceUrl: string
+      externalRaceId: number
+      name: string
+      offTime: string
+      raceStage: string
+      runnersDetailed: NonNullable<Race["runnersDetailed"]>
+      runners: string[]
+      result: Pick<Race["result"], "winner" | "placed"> | null
+    }> = []
 
-      const payloadText = await response.text()
-      sourcePayloadHash = toStringHash(payloadText)
-      sourceEtag = response.headers.get("etag") ?? lockState.sourceEtag
-
-      if (!sourcePayloadHash || sourcePayloadHash !== lockState.sourcePayloadHash) {
-        const parsed = JSON.parse(payloadText) as unknown
-        if (!Array.isArray(parsed)) {
-          throw new Error("Race source payload is not an array")
-        }
-
-        racesInput = (parsed as CloudfrontDay[]).flatMap((day) =>
-          Array.isArray(day.races) ? day.races : [],
-        )
-        cloudfrontChanged = true
+    for (const raceUrl of raceUrls) {
+      try {
+        parseSportingLifeRaceUrl(raceUrl)
+        const html = await fetchSportingLifePage(raceUrl)
+        sourceParts.push(`${raceUrl}\n${html}`)
+        const parsed = parseSportingLifeRacePageHtml(html)
+        parsedPages.push({
+          sourceUrl: raceUrl,
+          ...parsed,
+        })
+      } catch (pageError) {
+        const message = pageError instanceof Error ? pageError.message : "Unknown Sporting Life import error"
+        warnings.push(`sportinglife_page_failed:${raceUrl}:${message}`)
       }
     }
+
+    sourcePayloadHash = toStringHash(sourceParts.join("\n\n"))
+    const sportingLifeChanged = sourcePayloadHash !== lockState.sourcePayloadHash
 
     const existingSnapshot = await racesCol(db).get()
     const existingRaces = existingSnapshot.docs.map((doc) =>
@@ -2498,18 +2424,10 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
     const racesNeedingSettlement: string[] = []
     const oddsTargets: OddsImportTarget[] = []
 
-    if (cloudfrontChanged) {
-      for (const sourceRace of racesInput) {
-        const externalRaceId = Number(sourceRace.race_instance_uid)
-        const raceTitle = sanitizeRaceName(String(sourceRace.race_instance_title ?? ""))
-        const offTimeRaw = String(sourceRace.race_datetime ?? "").trim()
-        const offTime = offTimeRaw ? new Date(offTimeRaw).toISOString() : ""
-
-        if (!Number.isFinite(externalRaceId) || !offTime || !raceTitle) {
-          warnings.push(`Skipped malformed race record: uid=${sourceRace.race_instance_uid ?? "unknown"}`)
-          continue
-        }
-
+    for (const sourceRace of parsedPages) {
+        const externalRaceId = sourceRace.externalRaceId
+        const raceTitle = sanitizeRaceName(sourceRace.name)
+        const offTime = sourceRace.offTime
         const existingRace = existingByExternalRaceId.get(externalRaceId)
         const raceRef = existingRace
           ? racesCol(db).doc(existingRace.id)
@@ -2520,12 +2438,9 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
           continue
         }
 
-        const runnersDetailed = normalizeRunnersDetailed(sourceRace.API_runners)
-        const runners = runnersDetailed.filter((runner) => !runner.nonRunner).map((runner) => runner.horseName)
-        const parsedResult = parseFastResults(sourceRace)
-        if (sourceRace.finished && !parsedResult) {
-          warnings.push(`Result unavailable or unparseable for race ${externalRaceId}`)
-        }
+        const runnersDetailed = sourceRace.runnersDetailed
+        const runners = sourceRace.runners
+        const parsedResult = sourceRace.result
 
         if (hasRunnerDiff(existingRace?.runnersDetailed, runnersDetailed)) {
           summary.runnersChanged += 1
@@ -2539,8 +2454,8 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
             ? "settled"
             : parsedResult
               ? "result_pending"
-              : sourceRace.finished
-                ? "result_pending"
+              : sourceRace.raceStage === "DORMANT"
+                ? "scheduled"
                 : new Date(offTime).getTime() <= Date.now()
                   ? "off"
                   : "scheduled"
@@ -2548,8 +2463,8 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
           ? {
               winner: parsedResult.winner,
               placed: parsedResult.placed,
-              source: "api",
-              sourceRef: RACE_SOURCE_URL,
+              source: "scrape",
+              sourceRef: sourceRace.sourceUrl,
               updatedAt: nowIso(),
             }
           : existingRace?.result ?? EMPTY_RACE_RESULT
@@ -2564,11 +2479,11 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
             course: "Cheltenham",
             name: raceTitle,
             externalRaceId,
-            source: "cloudfront",
+            source: "sportinglife",
             importMeta: {
               etag: sourceEtag,
               importedAt: nowIso(),
-              sourceUrl: RACE_SOURCE_URL,
+              sourceUrl: sourceRace.sourceUrl,
               runId,
             },
             importLock: existingRace?.importLock ?? {
@@ -2602,24 +2517,6 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
           offTime,
           runnersDetailed,
         })
-      }
-    } else {
-      existingRaces
-        .filter(
-          (race) =>
-            race.course === "Cheltenham" &&
-            race.source === "cloudfront" &&
-            !race.importLock?.lockedByManualOverride &&
-            Array.isArray(race.runnersDetailed),
-        )
-        .forEach((race) => {
-          oddsTargets.push({
-            raceId: race.id,
-            raceName: race.name,
-            offTime: race.offTime,
-            runnersDetailed: race.runnersDetailed ?? [],
-          })
-        })
     }
 
     summary.oddsRacesAttempted = oddsTargets.length
@@ -2651,7 +2548,7 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
 
     for (const raceId of racesNeedingSettlement) {
       const settled = await settleRace(raceId, {
-        resultSource: "api",
+        resultSource: "scrape",
         skipStatsRecompute: true,
       })
       if (settled) {
@@ -2663,7 +2560,7 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
 
     const completedAt = nowIso()
     const runStatus: RaceImportRun["status"] =
-      !cloudfrontChanged && summary.oddsRacesUpdated === 0 && summary.oddsRacesFailed === 0
+      !sportingLifeChanged && summary.oddsRacesUpdated === 0 && summary.oddsRacesFailed === 0
         ? "noop"
         : "completed"
     const completedRun: RaceImportRun = {
@@ -2811,9 +2708,17 @@ const encoder = new TextEncoder()
 let stateRefreshTickerStarted = false
 let bootstrapped = false
 let bootstrapPromise: Promise<void> | null = null
+const SSE_HEARTBEAT_MS = 5000
 
 function digestState(state: TrackerState): string {
-  return JSON.stringify(state)
+  const stableState = {
+    users: state.users,
+    races: state.races,
+    bets: state.bets,
+    userStats: state.userStats,
+    globalStats: state.globalStats,
+  }
+  return JSON.stringify(stableState)
 }
 
 function broadcastState(state: TrackerState) {
@@ -2914,6 +2819,7 @@ export async function handleApiRequest(request: Request): Promise<Response> {
 
     if (request.method === "GET" && pathname === "/api/stream") {
       let streamController: ReadableStreamDefaultController<Uint8Array> | null = null
+      let heartbeatId: ReturnType<typeof setInterval> | null = null
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           streamController = controller
@@ -2922,8 +2828,27 @@ export async function handleApiRequest(request: Request): Promise<Response> {
           if (currentState) {
             controller.enqueue(encoder.encode(`event: state\ndata: ${JSON.stringify(currentState)}\n\n`))
           }
+          heartbeatId = setInterval(() => {
+            if (!streamController) {
+              return
+            }
+            try {
+              streamController.enqueue(encoder.encode(`: ping\n\n`))
+            } catch {
+              sseClients.delete(streamController)
+              streamController = null
+              if (heartbeatId) {
+                clearInterval(heartbeatId)
+                heartbeatId = null
+              }
+            }
+          }, SSE_HEARTBEAT_MS)
         },
         cancel() {
+          if (heartbeatId) {
+            clearInterval(heartbeatId)
+            heartbeatId = null
+          }
           if (streamController) {
             sseClients.delete(streamController)
             streamController = null
@@ -3093,6 +3018,7 @@ if (typeof Bun !== "undefined" && !process.env.VERCEL) {
     .then(() => {
       Bun.serve({
         port: PORT,
+        idleTimeout: 255,
         fetch: handleApiRequest,
       })
       console.log(`Cheltenham API server listening on http://localhost:${PORT}`)
