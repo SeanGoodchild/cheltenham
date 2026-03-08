@@ -56,7 +56,8 @@ If a user asks something broad like "How are things going?", interpret it as a q
 Prefer concrete names and numbers from the provided context when useful.
 Keep replies concise, natural, and conversational for a Telegram group, usually 1 to 4 short sentences.
 It is fine to refer to bets as "toots" occasionally, but do not overdo the slang or repeat "Lads" unnaturally.
-If the context does not contain the answer, say so briefly and do not invent details.`
+If the context does not contain the answer, say so briefly and do not invent details.
+If web search would materially improve the answer, you may use it. When search results are relevant, prefer citing or linking the most useful sources.`
 
 type TrackerState = {
   users: UserProfile[]
@@ -139,6 +140,14 @@ type GeminiGenerateContentResponse = {
   }>
   promptFeedback?: {
     blockReason?: string
+  }
+  groundingMetadata?: {
+    groundingChunks?: Array<{
+      web?: {
+        uri?: string
+        title?: string
+      }
+    }>
   }
 }
 
@@ -491,6 +500,26 @@ function trimTelegramReply(text: string): string {
   return `${normalized.slice(0, 3997)}...`
 }
 
+function appendGroundingLinks(reply: string, payload: GeminiGenerateContentResponse): string {
+  const links = (payload.groundingMetadata?.groundingChunks ?? [])
+    .map((chunk) => ({
+      title: chunk.web?.title?.trim() ?? "",
+      uri: chunk.web?.uri?.trim() ?? "",
+    }))
+    .filter((entry) => entry.uri)
+    .filter((entry, index, entries) => entries.findIndex((candidate) => candidate.uri === entry.uri) === index)
+    .slice(0, 3)
+
+  if (links.length === 0) {
+    return trimTelegramReply(reply)
+  }
+
+  const linkBlock = links
+    .map((link, index) => `${index + 1}. ${link.title || link.uri}\n${link.uri}`)
+    .join("\n")
+  return trimTelegramReply(`${reply}\n\nSources:\n${linkBlock}`)
+}
+
 function reserveGeminiRequestSlot(now = Date.now()): boolean {
   while (
     geminiRequestTimestamps.length > 0 &&
@@ -728,6 +757,7 @@ async function generateGeminiReply(
         systemInstruction: {
           parts: [{ text: GEMINI_SYSTEM_INSTRUCTION }],
         },
+        tools: [{ google_search: {} }],
         contents: [
           {
             role: "user",
@@ -774,7 +804,7 @@ ${prompt}`,
     throw new Error("Gemini returned an empty response")
   }
 
-  return trimTelegramReply(reply)
+  return appendGroundingLinks(reply, payload)
 }
 
 async function handleTelegramWebhook(request: Request): Promise<Response> {
