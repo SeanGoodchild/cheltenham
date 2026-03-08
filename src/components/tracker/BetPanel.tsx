@@ -724,13 +724,14 @@ export function BetPanel({
             <div className="grid gap-3 md:grid-cols-3">
               <div className="space-y-1.5">
                 <Label htmlFor="stake" className="text-xs text-muted-foreground">Stake</Label>
-                <div className="relative">
-                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">£</span>
-                  <Input
-                    id="stake"
-                    type="text"
-                    inputMode="decimal"
-                    className="pl-7"
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">£</span>
+                    <Input
+                      id="stake"
+                      type="text"
+                      inputMode="decimal"
+                      className="pl-7"
                     value={stakeInput}
                     placeholder="5.00"
                     onChange={(event) => {
@@ -753,39 +754,38 @@ export function BetPanel({
                         setStakeInput(formatStakeInput(parsed))
                       }
                     }}
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1.5 md:col-span-2">
-                <Label className="text-xs text-muted-foreground">Free Bet</Label>
-                <button
-                  type="button"
-                  aria-pressed={draft.isFreeBet ?? false}
-                  className={cn(
-                    "flex h-11 w-full items-center gap-3 rounded-lg border border-border/50 bg-muted/10 px-3 text-sm font-medium transition-colors",
-                    draft.isFreeBet
-                      ? "text-foreground"
-                      : "text-muted-foreground hover:bg-muted/20 hover:text-foreground",
-                  )}
-                  onClick={() =>
-                    setDraft((prev) => ({
-                      ...prev,
-                      isFreeBet: !(prev.isFreeBet ?? false),
-                    }))
-                  }
-                >
-                  <span
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    aria-pressed={draft.isFreeBet ?? false}
+                    title="Free Bet"
                     className={cn(
-                      "flex h-5 w-5 items-center justify-center rounded-md border transition-colors",
+                      "flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-colors",
                       draft.isFreeBet
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border/70 bg-background/40 text-transparent",
+                        ? "border-primary/40 bg-primary/15 text-primary"
+                        : "border-border/50 bg-muted/10 text-muted-foreground hover:bg-muted/20 hover:text-foreground",
                     )}
+                    onClick={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        isFreeBet: !(prev.isFreeBet ?? false),
+                      }))
+                    }
                   >
-                    <Check className="size-3.5" />
-                  </span>
-                </button>
+                    <span
+                      className={cn(
+                        "flex h-4 w-4 items-center justify-center rounded border transition-colors",
+                        draft.isFreeBet
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border/70 bg-background/40 text-transparent",
+                      )}
+                    >
+                      <Check className="size-2.5" />
+                    </span>
+                    Free Bet
+                  </button>
+                </div>
               </div>
 
               {draft.betType === "accumulator" ? (

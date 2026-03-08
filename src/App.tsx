@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
-import { Check, ChevronDown, Clock, Menu, Trophy, UserRound, Wallet, X } from "lucide-react"
+import { Check, ChevronDown, Clock, Heart, Menu, Trophy, UserRound, Wallet, X } from "lucide-react"
 
 import { BetPanel, type BetDraftForm } from "@/components/tracker/BetPanel"
 import { MainBoard } from "@/components/tracker/MainBoard"
 import { PersonalPanel } from "@/components/tracker/PersonalPanel"
+import { WellbeingPanel } from "@/components/tracker/WellbeingPanel"
 import { PnlCandlesPanel } from "@/components/tracker/PnlCandlesPanel"
 import { StatsCards } from "@/components/tracker/StatsCards"
 import {
@@ -40,17 +41,27 @@ import type { Bet, GlobalStats, Race, RaceImportRun, UserProfile } from "@/lib/t
 import { cn } from "@/lib/utils"
 
 const USER_STORAGE_KEY = "cheltenham.selectedUser"
-type AppTab = "new-bet" | "main-cashboard" | "user-summary"
+type AppTab = "new-bet" | "main-cashboard" | "user-summary" | "wellbeing"
 type MainBoardUserView = { mode: "all" | "me" }
 const MINUTE_MS = 60_000
 const AUTO_REFRESH_BUSY_BACKOFF_MS = MINUTE_MS
 const AUTO_REFRESH_FAILED_BACKOFF_MS = 2 * MINUTE_MS
 
-const TABS: Array<{ id: AppTab; label: string; shortLabel: string; icon: typeof Wallet }> = [
+type TabDef = { id: AppTab; label: string; shortLabel: string; icon: typeof Wallet }
+
+/** Tabs shown in both sidebar and mobile footer */
+const PRIMARY_TABS: TabDef[] = [
   { id: "new-bet", label: "Have a Toot", shortLabel: "Toot", icon: Wallet },
   { id: "main-cashboard", label: "Cashboard", shortLabel: "Board", icon: Trophy },
-  { id: "user-summary", label: "My Toots", shortLabel: "My Toots", icon: UserRound },
 ]
+
+/** Tabs shown only in the sidebar / slide-out menu */
+const SIDEBAR_TABS: TabDef[] = [
+  { id: "user-summary", label: "My Toots", shortLabel: "My Toots", icon: UserRound },
+  { id: "wellbeing", label: "Wellbeing", shortLabel: "Wellbeing", icon: Heart },
+]
+
+const ALL_TABS: TabDef[] = [...PRIMARY_TABS, ...SIDEBAR_TABS]
 
 const USER_AVATAR_SRC_BY_ID: Record<string, string> = {
   fabs: "/avatars/Fabs.png",
@@ -580,7 +591,7 @@ export function App() {
 
             {/* Nav tabs */}
             <nav className="space-y-1">
-              {TABS.map((tab) => (
+              {ALL_TABS.map((tab) => (
                 <button
                   key={`desktop-tab-${tab.id}`}
                   type="button"
@@ -749,6 +760,8 @@ export function App() {
                   onResolveOtherBet={handleResolveOtherBet}
                 />
               ) : null}
+
+              {activeTab === "wellbeing" ? <WellbeingPanel /> : null}
             </div>
           </main>
         </div>
@@ -791,7 +804,7 @@ export function App() {
             </div>
 
             <nav className="space-y-1">
-              {TABS.map((tab) => (
+              {ALL_TABS.map((tab) => (
                 <button
                   key={`mobile-tab-${tab.id}`}
                   type="button"
@@ -865,7 +878,7 @@ export function App() {
       {/* ─── Mobile Bottom Nav ─── */}
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-border/60 bg-background/90 px-3 pt-1.5 pb-[calc(env(safe-area-inset-bottom)+0.25rem)] backdrop-blur-xl md:hidden">
         <div className="flex justify-around">
-          {TABS.map((tab) => {
+          {PRIMARY_TABS.map((tab) => {
             const isActive = activeTab === tab.id
             return (
               <button
