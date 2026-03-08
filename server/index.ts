@@ -48,6 +48,15 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY?.trim() ?? ""
 const GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
 const GEMINI_RATE_LIMIT_MAX_REQUESTS = 20
 const GEMINI_RATE_LIMIT_WINDOW_MS = 60_000
+const TELEGRAM_DEFAULT_SUMMARY_PROMPT = "How are things going in the Cheltenham tracker right now?"
+const GEMINI_SYSTEM_INSTRUCTION = `You are a friendly bot designed to give info to a group of Lads about Cheltenham Horse Racing. The Lads will be tracking how their bets are doing, P&L, etc. You will be provided this information which may inform your responses.
+
+Use the provided tracker summary as your source of truth for the current Cheltenham app state.
+If a user asks something broad like "How are things going?", interpret it as a question about the current tracker state, bets, toots, races, standings, and P&L.
+Prefer concrete names and numbers from the provided context when you have them.
+Keep replies concise, natural, and suitable for a Telegram group chat, usually 1 to 4 short sentences.
+It is fine to refer to bets as "toots" when it sounds natural.
+If the context does not contain the answer, say so briefly and do not invent details.`
 
 type TrackerState = {
   users: UserProfile[]
@@ -97,10 +106,23 @@ type TelegramWebhookUpdate = {
       type?: string
       title?: string
     }
+    entities?: Array<{
+      type?: string
+      offset?: number
+      length?: number
+    }>
     from?: {
       id?: number
       is_bot?: boolean
       username?: string
+    }
+    reply_to_message?: {
+      message_id?: number
+      from?: {
+        id?: number
+        is_bot?: boolean
+        username?: string
+      }
     }
   }
 }
@@ -119,7 +141,16 @@ type GeminiGenerateContentResponse = {
   }
 }
 
+type TelegramGetMeResponse = {
+  ok?: boolean
+  result?: {
+    username?: string
+  }
+  description?: string
+}
+
 const geminiRequestTimestamps: number[] = []
+let telegramBotUsernamePromise: Promise<string> | null = null
 
 type RaceImportSummary = {
   racesInserted: number
@@ -475,7 +506,181 @@ function reserveGeminiRequestSlot(now = Date.now()): boolean {
   return true
 }
 
-async function generateGeminiReply(prompt: string): Promise<string> {
+async function getTelegramBotUsername(): Promise<string> {
+  if (!TELEGRAM_BOT_TOKEN) {
+    throw new Error("Telegram not configured (missing TELEGRAM_BOT_TOKEN)")
+  }
+
+  if (!telegramBotUsernamePromise) {
+    telegramBotUsernamePromise = (async () => {
+      const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe`)
+      const responseBody = await response.text()
+      if (!response.ok) {
+        throw new Error(`Telegram getMe failed (${response.status}): ${responseBody.slice(0, 300)}`)
+      }
+
+      const payload = JSON.parse(responseBody) as TelegramGetMeResponse
+      const username = payload.result?.username?.trim()
+      if (!payload.ok || !username) {
+        throw new Error(`Telegram getMe missing username: ${payload.description ?? "unknown error"}`)
+      }
+      return username
+    })().catch((error) => {
+      telegramBotUsernamePromise = null
+      throw error
+    })
+  }
+
+  return telegramBotUsernamePromise
+}
+
+function stripTelegramTriggerText(text: string, botUsername: string): string {
+  let cleaned = text.trim()
+  const mentionPattern = new RegExp(`@${botUsername}\\b`, "ig")
+  cleaned = cleaned.replace(mentionPattern, "").replace(/\s+/g, " ").trim()
+  return cleaned
+}
+
+function shouldRespondToTelegramMessage(
+  message: NonNullable<TelegramWebhookUpdate["message"]>,
+  botUsername: string,
+): boolean {
+  const chatType = message.chat?.type ?? ""
+  if (chatType === "private") {
+    return true
+  }
+
+  if (message.reply_to_message?.from?.is_bot) {
+    return true
+  }
+
+  const text = message.text?.trim() ?? ""
+  if (!text) {
+    return false
+  }
+
+  return new RegExp(`@${botUsername}\\b`, "i").test(text)
+}
+
+function buildTelegramPromptInput(
+  message: NonNullable<TelegramWebhookUpdate["message"]>,
+  botUsername: string,
+): string {
+  const cleaned = stripTelegramTriggerText(message.text?.trim() ?? "", botUsername)
+  return cleaned || TELEGRAM_DEFAULT_SUMMARY_PROMPT
+}
+
+function formatCompactMoney(value: number): string {
+  const sign = value > 0 ? "+" : value < 0 ? "-" : ""
+  return `${sign}${formatMoneyGBP(Math.abs(value))}`
+}
+
+function getNextRaceForSummary(races: Race[], now = Date.now()): Race | null {
+  const upcoming = races
+    .filter((race) => race.status !== "settled" && new Date(race.offTime).getTime() > now)
+    .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0]
+  if (upcoming) {
+    return upcoming
+  }
+
+  return (
+    races
+      .filter((race) => race.status !== "settled")
+      .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0] ?? null
+  )
+}
+
+async function buildTrackerSummaryText(): Promise<string> {
+  const state = currentState ?? (await loadState())
+  const now = nowIso()
+  const betsWithDerivedStatus = state.bets.map((bet) => ({
+    ...bet,
+    status: getDerivedBetStatus(bet, now),
+  }))
+  const computedUserStats = state.users.map((user) => computeUserStats(user, betsWithDerivedStatus))
+  const computedGlobalStats = computeGlobalStats(betsWithDerivedStatus, state.users, now)
+  const usersById = new Map(state.users.map((user) => [user.id, user]))
+  const sortedUserStats = [...computedUserStats].sort((a, b) => {
+    if (a.profitLoss !== b.profitLoss) {
+      return b.profitLoss - a.profitLoss
+    }
+    const aName = usersById.get(a.userId)?.displayName ?? a.userId
+    const bName = usersById.get(b.userId)?.displayName ?? b.userId
+    return aName.localeCompare(bName)
+  })
+
+  const topUser = sortedUserStats[0] ?? null
+  const bottomUser = [...sortedUserStats].sort((a, b) => a.profitLoss - b.profitLoss)[0] ?? null
+  const nextRace = getNextRaceForSummary(state.races)
+  const openBets = betsWithDerivedStatus.filter((bet) => bet.status === "open" || bet.status === "locked")
+  const openBetsByUser = state.users
+    .map((user) => ({
+      name: user.displayName,
+      count: openBets.filter((bet) => bet.userId === user.id).length,
+    }))
+    .filter((entry) => entry.count > 0)
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+
+  const nextRaceStakeByUser =
+    nextRace === null
+      ? []
+      : state.users
+          .map((user) => ({
+            name: user.displayName,
+            totalStake: roundMoney(
+              openBets
+                .filter((bet) => bet.userId === user.id && bet.legs.some((leg) => leg.raceId === nextRace.id))
+                .reduce((acc, bet) => acc + bet.stakeTotal, 0),
+            ),
+          }))
+          .filter((entry) => entry.totalStake > 0)
+          .sort((a, b) => b.totalStake - a.totalStake || a.name.localeCompare(b.name))
+
+  const nextRaceSelections =
+    nextRace === null
+      ? []
+      : openBets
+          .filter((bet) => bet.legs.some((leg) => leg.raceId === nextRace.id))
+          .map((bet) => {
+            const leg = bet.legs.find((entry) => entry.raceId === nextRace.id)
+            const userName = usersById.get(bet.userId)?.displayName ?? bet.userId
+            return leg ? `${userName}: ${leg.selectionName}` : null
+          })
+          .filter((value): value is string => Boolean(value))
+
+  const raceStatusCounts = {
+    upcoming: state.races.filter((race) => race.lifecycle === "upcoming").length,
+    inProgress: state.races.filter((race) => race.lifecycle === "in_progress").length,
+    complete: state.races.filter((race) => race.lifecycle === "complete").length,
+  }
+
+  const lines = [
+    "Cheltenham Tracker Summary",
+    `Overall: ${computedGlobalStats.betsPlaced} bets, ${formatMoneyGBP(computedGlobalStats.totalStaked)} staked, ${formatMoneyGBP(computedGlobalStats.totalReturns)} returns, P&L ${formatCompactMoney(computedGlobalStats.totalReturns - computedGlobalStats.totalStaked)}, win rate ${computedGlobalStats.winPct}%, ROAS ${computedGlobalStats.roasPct}%.`,
+    topUser
+      ? `Leader: ${(usersById.get(topUser.userId)?.displayName ?? topUser.userId)} ${formatCompactMoney(topUser.profitLoss)}.`
+      : "Leader: none.",
+    bottomUser
+      ? `Biggest loser: ${(usersById.get(bottomUser.userId)?.displayName ?? bottomUser.userId)} ${formatCompactMoney(bottomUser.profitLoss)}.`
+      : "Biggest loser: none.",
+    `Race status: ${raceStatusCounts.upcoming} upcoming, ${raceStatusCounts.inProgress} in progress, ${raceStatusCounts.complete} complete.`,
+    nextRace
+      ? `Next race: ${nextRace.name} at ${formatRaceTimeForMessage(nextRace.offTime)} (${nextRace.status}). Favourite: ${nextRace.marketFavourite ? `${nextRace.marketFavourite.horseName} ${nextRace.marketFavourite.bestFractional}` : "unknown"}.`
+      : "Next race: none scheduled.",
+    `Open toots: ${openBets.length}.${openBetsByUser.length > 0 ? ` By user: ${openBetsByUser.map((entry) => `${entry.name} ${entry.count}`).join(", ")}.` : ""}`,
+    nextRaceStakeByUser.length > 0
+      ? `Next race stake by user: ${nextRaceStakeByUser.map((entry) => `${entry.name} ${formatMoneyGBP(entry.totalStake)}`).join(", ")}.`
+      : "Next race stake by user: none.",
+    nextRaceSelections.length > 0
+      ? `Next race selections: ${nextRaceSelections.slice(0, 8).join(", ")}.`
+      : "Next race selections: none.",
+    `Per user: ${sortedUserStats.map((stat) => `${usersById.get(stat.userId)?.displayName ?? stat.userId} P&L ${formatCompactMoney(stat.profitLoss)}, bets ${stat.betsPlaced}, staked ${formatMoneyGBP(stat.totalStaked)}, returns ${formatMoneyGBP(stat.totalReturns)}, win ${stat.winPct}%`).join(" | ")}.`,
+  ]
+
+  return lines.join("\n")
+}
+
+async function generateGeminiReply(prompt: string, trackerSummary: string): Promise<string> {
   if (!GEMINI_API_KEY) {
     throw new Error("Gemini not configured (missing GEMINI_API_KEY)")
   }
@@ -492,12 +697,27 @@ async function generateGeminiReply(prompt: string): Promise<string> {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: GEMINI_SYSTEM_INSTRUCTION }],
+        },
         contents: [
           {
             role: "user",
-            parts: [{ text: prompt }],
+            parts: [
+              {
+                text: `Tracker context:
+${trackerSummary}
+
+User message:
+${prompt}`,
+              },
+            ],
           },
         ],
+        generationConfig: {
+          temperature: 0.4,
+          maxOutputTokens: 220,
+        },
       }),
     },
   )
@@ -559,9 +779,16 @@ async function handleTelegramWebhook(request: Request): Promise<Response> {
     return jsonResponse({ ok: true, ignored: true, reason: "no_text" })
   }
 
+  const botUsername = await getTelegramBotUsername()
+  if (!shouldRespondToTelegramMessage(message, botUsername)) {
+    return jsonResponse({ ok: true, ignored: true, reason: "not_addressed_to_bot" })
+  }
+
   let replyText = ""
   try {
-    replyText = await generateGeminiReply(text)
+    const trackerSummary = await buildTrackerSummaryText()
+    const promptInput = buildTelegramPromptInput(message, botUsername)
+    replyText = await generateGeminiReply(promptInput, trackerSummary)
   } catch (error) {
     console.error("telegram webhook gemini reply failed", error)
     replyText =

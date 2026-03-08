@@ -131,4 +131,4 @@ bun run dev:full
   - `ODDS_IMPORT_USER_AGENT`
 - If `VITE_API_BASE_URL` is currently set to `http://localhost:3001` in Vercel, remove it.
 - Note: `/api/stream` (SSE) works via function streaming, but platform duration limits can still force reconnects in some environments.
-- `/api/telegram/webhook` accepts Telegram updates and replies with a one-off Gemini response for plain text group messages.
+- `/api/telegram/webhook` accepts Telegram updates and replies with a one-off Gemini response in direct messages, when explicitly mentioned in a group chat, or when a user replies to a bot message, using a concise Cheltenham tracker state summary as context.
