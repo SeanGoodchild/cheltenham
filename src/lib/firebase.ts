@@ -12,6 +12,7 @@ export type BetDraftInput = {
   }>
   oddsUsed?: number | null
   stakeTotal: number
+  isFreeBet?: boolean
   ewTerms?: {
     placesPaid: number
     placeFraction: number

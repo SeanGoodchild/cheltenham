@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   buildRaceOutcomeRanges,
+  calculateBetPotentialProfit,
   calculateBetPotentialReturn,
   calculateBetReturn,
   computeGlobalStats,
@@ -161,6 +162,18 @@ describe("settlement rules", () => {
 
     expect(calculateBetPotentialReturn(bet)).toBeCloseTo(50.4, 6)
   })
+
+  it("calculates free bet single returns without returning stake", () => {
+    const bet = baseBet({
+      isFreeBet: true,
+      stakeTotal: 2,
+      oddsUsed: 2,
+      legs: [{ raceId: "r1", selectionName: "Horse A", decimalOdds: 2, result: "win" }],
+    })
+
+    expect(calculateBetReturn(bet)).toBe(2)
+    expect(calculateBetPotentialProfit(bet)).toBe(2)
+  })
 })
 
 describe("stats calculations", () => {
@@ -192,6 +205,27 @@ describe("stats calculations", () => {
     expect(global.totalStaked).toBe(30)
     expect(global.totalReturns).toBe(25)
     expect(global.roasPct).toBe(250)
+  })
+
+  it("does not treat free bet stake as cash risk in settled P&L", () => {
+    const freeBetWin = baseBet({
+      status: "settled",
+      isFreeBet: true,
+      stakeTotal: 2,
+      totalReturn: 2,
+      profitLoss: 2,
+      legs: [{ raceId: "r1", selectionName: "Horse A", decimalOdds: 2, result: "win" }],
+    })
+
+    const userStats = computeUserStats(user, [freeBetWin])
+    expect(userStats.totalStaked).toBe(2)
+    expect(userStats.totalReturns).toBe(2)
+    expect(userStats.profitLoss).toBe(2)
+
+    const global = computeGlobalStats([freeBetWin], [user], "2026-03-10T14:00:00.000Z")
+    expect(global.totalStaked).toBe(2)
+    expect(global.totalReturns).toBe(2)
+    expect(global.roasPct).toBe(0)
   })
 })
 

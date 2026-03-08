@@ -40,6 +40,10 @@ function isValidOdds(value: number | undefined | null): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 1
 }
 
+export function getBetRiskStake(bet: Pick<Bet, "stakeTotal" | "isFreeBet">): number {
+  return bet.isFreeBet ? 0 : bet.stakeTotal
+}
+
 export function deriveLockAt(legs: Array<Pick<BetLeg, "raceId">>, races: Race[]): string {
   const times = legs
     .map((leg) => races.find((race) => race.id === leg.raceId)?.offTime)
@@ -102,12 +106,12 @@ export function getDerivedBetStatus(bet: Bet, nowIso: string): BetStatus {
   return parseISO(nowIso).getTime() > parseISO(bet.lockAt).getTime() ? "locked" : "open"
 }
 
-function calculateSingleReturn(stake: number, odds: number, legResult: LegResult): number {
+function calculateSingleReturn(stake: number, odds: number, legResult: LegResult, isFreeBet = false): number {
   if (legResult === "win") {
-    return stake * odds
+    return isFreeBet ? stake * Math.max(odds - 1, 0) : stake * odds
   }
   if (legResult === "void") {
-    return stake
+    return isFreeBet ? 0 : stake
   }
   return 0
 }
@@ -117,19 +121,32 @@ function calculateEachWayReturn(
   odds: number,
   legResult: LegResult,
   placeFraction: number,
+  isFreeBet = false,
 ): number {
   const winStake = stakeTotal / 2
   const placeStake = stakeTotal / 2
 
   const winReturn =
-    legResult === "win" ? winStake * odds : legResult === "void" ? winStake : 0
+    legResult === "win"
+      ? isFreeBet
+        ? winStake * Math.max(odds - 1, 0)
+        : winStake * odds
+      : legResult === "void"
+        ? isFreeBet
+          ? 0
+          : winStake
+        : 0
 
   const placeOdds = 1 + (odds - 1) * placeFraction
   const placeReturn =
     legResult === "win" || legResult === "place"
-      ? placeStake * placeOdds
+      ? isFreeBet
+        ? placeStake * Math.max(placeOdds - 1, 0)
+        : placeStake * placeOdds
       : legResult === "void"
-        ? placeStake
+        ? isFreeBet
+          ? 0
+          : placeStake
         : 0
 
   return winReturn + placeReturn
@@ -159,7 +176,10 @@ export function resolveBetOddsUsed(bet: Pick<Bet, "betType" | "oddsUsed" | "legs
   return isValidOdds(firstLegOdds) ? firstLegOdds : null
 }
 
-function calculateAccumulatorReturn(stake: number, bet: Pick<Bet, "legs" | "oddsUsed" | "betType">): number {
+function calculateAccumulatorReturn(
+  stake: number,
+  bet: Pick<Bet, "legs" | "oddsUsed" | "betType" | "isFreeBet">,
+): number {
   const legs = bet.legs
   if (legs.some((leg) => leg.result === "lose" || leg.result === "place")) {
     return 0
@@ -184,7 +204,7 @@ function calculateAccumulatorReturn(stake: number, bet: Pick<Bet, "legs" | "odds
   }, 1)
 
   const adjustedOdds = Math.max(1, combinedOdds / Math.max(1, voidOddsFactor))
-  return stake * adjustedOdds
+  return bet.isFreeBet ? stake * Math.max(adjustedOdds - 1, 0) : stake * adjustedOdds
 }
 
 export function isBetSettleable(bet: Bet): boolean {
@@ -207,18 +227,20 @@ export function calculateBetReturn(bet: Bet): number {
   }
 
   if (bet.betType === "single" || bet.betType === "other") {
-    return calculateSingleReturn(bet.stakeTotal, oddsUsed, firstLeg.result)
+    return calculateSingleReturn(bet.stakeTotal, oddsUsed, firstLeg.result, bet.isFreeBet)
   }
 
   if (bet.betType === "each_way") {
     const placeFraction = bet.ewTerms?.placeFraction ?? 0.2
-    return calculateEachWayReturn(bet.stakeTotal, oddsUsed, firstLeg.result, placeFraction)
+    return calculateEachWayReturn(bet.stakeTotal, oddsUsed, firstLeg.result, placeFraction, bet.isFreeBet)
   }
 
   return calculateAccumulatorReturn(bet.stakeTotal, bet)
 }
 
-export function calculateBetPotentialReturn(bet: Pick<Bet, "betType" | "stakeTotal" | "ewTerms" | "legs" | "oddsUsed">): number {
+export function calculateBetPotentialReturn(
+  bet: Pick<Bet, "betType" | "stakeTotal" | "ewTerms" | "legs" | "oddsUsed" | "isFreeBet">,
+): number {
   const oddsUsed = resolveBetOddsUsed(bet)
   if (!isValidOdds(oddsUsed) || bet.stakeTotal <= 0) {
     return 0
@@ -226,16 +248,22 @@ export function calculateBetPotentialReturn(bet: Pick<Bet, "betType" | "stakeTot
 
   if (bet.betType === "each_way") {
     const placeFraction = bet.ewTerms?.placeFraction ?? 0.2
-    return calculateEachWayReturn(bet.stakeTotal, oddsUsed, "win", placeFraction)
+    return calculateEachWayReturn(bet.stakeTotal, oddsUsed, "win", placeFraction, bet.isFreeBet)
   }
 
-  return bet.stakeTotal * oddsUsed
+  return bet.isFreeBet ? bet.stakeTotal * Math.max(oddsUsed - 1, 0) : bet.stakeTotal * oddsUsed
+}
+
+export function calculateBetPotentialProfit(
+  bet: Pick<Bet, "betType" | "stakeTotal" | "ewTerms" | "legs" | "oddsUsed" | "isFreeBet">,
+): number {
+  return Math.max(0, roundMoney(calculateBetPotentialReturn(bet) - getBetRiskStake(bet)))
 }
 
 export function computeUserStats(user: UserProfile, bets: Bet[]): UserStats {
   const userBets = bets.filter((bet) => bet.userId === user.id)
   const settledBets = userBets.filter((bet) => bet.status === "settled")
-  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
+  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + getBetRiskStake(bet), 0))
   const oddsValues = userBets
     .map((bet) => resolveBetOddsUsed(bet))
     .filter((value): value is number => isValidOdds(value))
@@ -290,7 +318,7 @@ export function computeGlobalStats(bets: Bet[], users: UserProfile[], nowIso: st
       : 0
 
   const settledBets = bets.filter((bet) => bet.status === "settled")
-  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
+  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + getBetRiskStake(bet), 0))
   const settledWins = settledBets.filter((bet) => (bet.totalReturn ?? 0) > 0).length
   const roasPct = settledStaked > 0 ? roundMoney((totalReturns / settledStaked) * 100) : 0
   const winPct = settledBets.length > 0 ? roundMoney((settledWins / settledBets.length) * 100) : 0
@@ -496,7 +524,7 @@ function calculateProjectedProfitLossForOutcome(
   }
 
   const totalReturn = calculateBetReturn(projectedBet)
-  return roundMoney(totalReturn - bet.stakeTotal)
+  return roundMoney(totalReturn - getBetRiskStake(bet))
 }
 
 export function buildRaceOutcomeRanges(races: Race[], bets: Bet[]): RaceOutcomeRange[] {

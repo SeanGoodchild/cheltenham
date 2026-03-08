@@ -28,6 +28,7 @@ export type Bet = {
   legs: BetLeg[]
   legRaceIds: string[]
   stakeTotal: number
+  isFreeBet?: boolean
   ewTerms?: EwTerms
   lockAt: string
   status: BetStatus

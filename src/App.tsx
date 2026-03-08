@@ -71,6 +71,7 @@ function toBetDraft(form: BetDraftForm) {
     betType: form.betType,
     betName: form.betName,
     stakeTotal: form.stakeTotal,
+    isFreeBet: form.isFreeBet,
     oddsUsed: form.oddsUsed,
     ewTerms: form.ewTerms,
     legs: form.legs.map((leg) => ({

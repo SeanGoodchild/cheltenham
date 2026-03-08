@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { AlertCircle, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react"
+import { AlertCircle, Check, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { formatCurrency, formatOdds } from "@/lib/format"
 import { normalizeHorseName } from "@/lib/horse"
-import { calculateBetPotentialReturn, resolveBetOddsUsed } from "@/lib/settlement"
+import { calculateBetPotentialProfit, getBetRiskStake, resolveBetOddsUsed } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
 import type { Bet, BetType, Race, RaceDay } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -18,6 +18,7 @@ export type BetDraftForm = {
   betType: BetType
   betName?: string
   stakeTotal: number
+  isFreeBet?: boolean
   oddsUsed?: number | null
   ewTerms?: {
     placesPaid: number
@@ -91,6 +92,7 @@ function newDraft(userId: string, nextRace?: Race): BetDraftForm {
     betType: "single",
     betName: "",
     stakeTotal: 5,
+    isFreeBet: false,
     oddsUsed: null,
     ewTerms: {
       placesPaid: 3,
@@ -151,6 +153,8 @@ export function BetPanel({
   const [actionError, setActionError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [stakeInput, setStakeInput] = useState("")
+  const [placesPaidInput, setPlacesPaidInput] = useState("3")
+  const [placeFractionInput, setPlaceFractionInput] = useState("0.2")
   const [quickRacePicks, setQuickRacePicks] = useState<Record<number, { day?: RaceDay; time?: string }>>({})
   const [accaOddsManuallySet, setAccaOddsManuallySet] = useState(false)
   const racesSorted = useMemo(
@@ -173,6 +177,8 @@ export function BetPanel({
     const nextDraft = newDraft(userId, nextRace)
     setDraft(nextDraft)
     setStakeInput("")
+    setPlacesPaidInput(String(nextDraft.ewTerms?.placesPaid ?? 3))
+    setPlaceFractionInput(String(nextDraft.ewTerms?.placeFraction ?? 0.2))
     setEditingBetId(null)
     setQuickRacePicks({ 0: buildQuickPickForRace(nextRace) })
     setAccaOddsManuallySet(false)
@@ -182,6 +188,8 @@ export function BetPanel({
     const nextDraft = newDraft(selectedUserId, nextRace)
     setDraft(nextDraft)
     setStakeInput("")
+    setPlacesPaidInput(String(nextDraft.ewTerms?.placesPaid ?? 3))
+    setPlaceFractionInput(String(nextDraft.ewTerms?.placeFraction ?? 0.2))
     setEditingBetId(null)
     setQuickRacePicks({ 0: buildQuickPickForRace(nextRace) })
     setActionError(null)
@@ -205,6 +213,7 @@ export function BetPanel({
       betType: bet.betType,
       betName: bet.betName ?? "",
       stakeTotal: bet.stakeTotal,
+      isFreeBet: bet.isFreeBet ?? false,
       oddsUsed: resolvedOdds,
       ewTerms: bet.ewTerms,
       legs:
@@ -218,6 +227,8 @@ export function BetPanel({
             })),
     })
     setStakeInput(formatStakeInput(bet.stakeTotal))
+    setPlacesPaidInput(String(bet.ewTerms?.placesPaid ?? 3))
+    setPlaceFractionInput(String(bet.ewTerms?.placeFraction ?? 0.2))
     setAccaOddsManuallySet(
       bet.betType === "accumulator" &&
         isValidOdds(resolvedOdds) &&
@@ -247,16 +258,51 @@ export function BetPanel({
   const potentialWinDisplay = useMemo(() => {
     const parsedStake = stakeInput.trim() === "" ? draft.stakeTotal : Number(stakeInput)
     if (!Number.isFinite(parsedStake) || parsedStake <= 0) return null
-    const odds = draft.betType === "accumulator" ? draft.oddsUsed : draft.legs[0]?.decimalOdds
-    if (!isValidOdds(odds)) return null
+    const draftForDisplay: Bet = {
+      id: "__draft__",
+      season: "2026",
+      userId: draft.userId,
+      betType: draft.betType,
+      betName: draft.betName,
+      oddsUsed: draft.oddsUsed ?? undefined,
+      legs:
+        draft.betType === "other"
+          ? [{ raceId: "__other__", selectionName: draft.betName ?? "Other bet", decimalOdds: draft.oddsUsed ?? 1, result: "pending" }]
+          : draft.legs.map((leg) => ({
+              raceId: leg.raceId,
+              selectionName: leg.selectionName,
+              decimalOdds: leg.decimalOdds ?? 0,
+              horseUid: leg.horseUid,
+              result: "pending",
+            })),
+      legRaceIds: draft.legs.map((leg) => leg.raceId),
+      stakeTotal: parsedStake,
+      isFreeBet: draft.isFreeBet ?? false,
+      ewTerms: draft.ewTerms,
+      lockAt: new Date().toISOString(),
+      status: "open",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+    const win = calculateBetPotentialProfit(draftForDisplay)
+    if (win <= 0) return null
 
     if (draft.betType === "each_way" && draft.ewTerms) {
-      const winReturn = parsedStake * 0.5 * Number(odds)
+      const odds = draft.oddsUsed ?? draft.legs[0]?.decimalOdds
+      if (!isValidOdds(odds)) {
+        return { win, place: null, loss: getBetRiskStake(draftForDisplay) }
+      }
       const placeOdds = 1 + (Number(odds) - 1) * draft.ewTerms.placeFraction
-      const placeReturn = parsedStake * 0.5 * placeOdds
-      return { win: winReturn - parsedStake, place: placeReturn - parsedStake }
+      const placeDraft: Bet = {
+        ...draftForDisplay,
+        betType: "single",
+        oddsUsed: placeOdds,
+        legs: draftForDisplay.legs.map((leg) => ({ ...leg, decimalOdds: placeOdds })),
+      }
+      return { win, place: calculateBetPotentialProfit(placeDraft), loss: getBetRiskStake(draftForDisplay) }
     }
-    return { win: parsedStake * Number(odds) - parsedStake, place: null }
+
+    return { win, place: null, loss: getBetRiskStake(draftForDisplay) }
   }, [draft, stakeInput])
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -286,6 +332,7 @@ export function BetPanel({
       const payload: BetDraftForm = {
         ...draft,
         stakeTotal: parsedStakeTotal,
+        isFreeBet: draft.isFreeBet ?? false,
         betName: draft.betType === "other" ? trimmedBetName : undefined,
         oddsUsed:
           draft.betType === "other"
@@ -710,6 +757,37 @@ export function BetPanel({
                 </div>
               </div>
 
+              <div className="space-y-1.5 md:col-span-2">
+                <Label className="text-xs text-muted-foreground">Free Bet</Label>
+                <button
+                  type="button"
+                  aria-pressed={draft.isFreeBet ?? false}
+                  className={cn(
+                    "flex h-11 w-full items-center gap-3 rounded-lg border border-border/50 bg-muted/10 px-3 text-sm font-medium transition-colors",
+                    draft.isFreeBet
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:bg-muted/20 hover:text-foreground",
+                  )}
+                  onClick={() =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      isFreeBet: !(prev.isFreeBet ?? false),
+                    }))
+                  }
+                >
+                  <span
+                    className={cn(
+                      "flex h-5 w-5 items-center justify-center rounded-md border transition-colors",
+                      draft.isFreeBet
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border/70 bg-background/40 text-transparent",
+                    )}
+                  >
+                    <Check className="size-3.5" />
+                  </span>
+                </button>
+              </div>
+
               {draft.betType === "accumulator" ? (
                 <div className="space-y-1.5 md:col-span-2">
                   <Label htmlFor="acca-odds" className="text-xs text-muted-foreground">Final Acca Odds (Decimal)</Label>
@@ -764,16 +842,43 @@ export function BetPanel({
                       type="number"
                       min={1}
                       step={1}
-                      value={draft.ewTerms?.placesPaid ?? 3}
-                      onChange={(event) =>
-                        setDraft((prev) => ({
-                          ...prev,
-                          ewTerms: {
-                            placesPaid: Number(event.target.value),
-                            placeFraction: prev.ewTerms?.placeFraction ?? 0.2,
-                          },
-                        }))
-                      }
+                      value={placesPaidInput}
+                      onChange={(event) => {
+                        const rawValue = event.target.value
+                        setPlacesPaidInput(rawValue)
+                        if (rawValue === "") {
+                          return
+                        }
+                        const parsed = Number(rawValue)
+                        if (Number.isFinite(parsed)) {
+                          setDraft((prev) => ({
+                            ...prev,
+                            ewTerms: {
+                              placesPaid: parsed,
+                              placeFraction: prev.ewTerms?.placeFraction ?? 0.2,
+                            },
+                          }))
+                        }
+                      }}
+                      onBlur={() => {
+                        if (placesPaidInput.trim() === "") {
+                          const fallback = draft.ewTerms?.placesPaid ?? 3
+                          setPlacesPaidInput(String(fallback))
+                          return
+                        }
+                        const parsed = Number(placesPaidInput)
+                        if (Number.isFinite(parsed)) {
+                          const normalized = Math.max(1, Math.round(parsed))
+                          setPlacesPaidInput(String(normalized))
+                          setDraft((prev) => ({
+                            ...prev,
+                            ewTerms: {
+                              placesPaid: normalized,
+                              placeFraction: prev.ewTerms?.placeFraction ?? 0.2,
+                            },
+                          }))
+                        }
+                      }}
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -784,16 +889,43 @@ export function BetPanel({
                       min={0.01}
                       max={1}
                       step={0.01}
-                      value={draft.ewTerms?.placeFraction ?? 0.2}
-                      onChange={(event) =>
-                        setDraft((prev) => ({
-                          ...prev,
-                          ewTerms: {
-                            placesPaid: prev.ewTerms?.placesPaid ?? 3,
-                            placeFraction: Number(event.target.value),
-                          },
-                        }))
-                      }
+                      value={placeFractionInput}
+                      onChange={(event) => {
+                        const rawValue = event.target.value
+                        setPlaceFractionInput(rawValue)
+                        if (rawValue === "") {
+                          return
+                        }
+                        const parsed = Number(rawValue)
+                        if (Number.isFinite(parsed)) {
+                          setDraft((prev) => ({
+                            ...prev,
+                            ewTerms: {
+                              placesPaid: prev.ewTerms?.placesPaid ?? 3,
+                              placeFraction: parsed,
+                            },
+                          }))
+                        }
+                      }}
+                      onBlur={() => {
+                        if (placeFractionInput.trim() === "") {
+                          const fallback = draft.ewTerms?.placeFraction ?? 0.2
+                          setPlaceFractionInput(String(fallback))
+                          return
+                        }
+                        const parsed = Number(placeFractionInput)
+                        if (Number.isFinite(parsed)) {
+                          const normalized = Math.min(1, Math.max(0.01, parsed))
+                          setPlaceFractionInput(String(normalized))
+                          setDraft((prev) => ({
+                            ...prev,
+                            ewTerms: {
+                              placesPaid: prev.ewTerms?.placesPaid ?? 3,
+                              placeFraction: normalized,
+                            },
+                          }))
+                        }
+                      }}
                     />
                   </div>
                 </>
@@ -819,6 +951,12 @@ export function BetPanel({
                     </span>
                   </div>
                 ) : null}
+                <div className="mt-1 flex items-baseline justify-between">
+                  <span className="text-[11px] text-muted-foreground">Potential Loss</span>
+                  <span className="text-sm font-semibold text-muted-foreground">
+                    {formatCurrency(potentialWinDisplay.loss)}
+                  </span>
+                </div>
               </div>
             ) : null}
 
@@ -869,8 +1007,7 @@ export function BetPanel({
           <CardContent className="space-y-2">
             {currentOpenBets.map((bet) => {
               const oddsUsed = resolveBetOddsUsed(bet)
-              const potentialReturn = calculateBetPotentialReturn(bet)
-              const potentialWin = Math.max(0, potentialReturn - bet.stakeTotal)
+              const potentialWin = calculateBetPotentialProfit(bet)
               const betLabel =
                 bet.betType === "other"
                   ? (bet.betName?.trim() || "Other bet")
@@ -887,6 +1024,7 @@ export function BetPanel({
                       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                         <span>{bet.betType}</span>
                         <span>{formatCurrency(bet.stakeTotal)}</span>
+                        {bet.isFreeBet ? <span>Free bet</span> : null}
                         {oddsUsed ? <span>@ {formatOdds(oddsUsed)}</span> : null}
                         <ChevronRight className="size-3" />
                         <span className="font-medium text-foreground">{formatCurrency(potentialWin)}</span>

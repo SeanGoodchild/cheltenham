@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { formatCurrency, formatOdds } from "@/lib/format"
-import { calculateBetPotentialReturn, resolveBetOddsUsed } from "@/lib/settlement"
+import { calculateBetPotentialProfit, resolveBetOddsUsed } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
 import type { Bet, Race, UserProfile } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -124,7 +124,7 @@ export function PersonalPanel({
         ) : null}
         {personalBets.map((bet) => {
           const oddsUsed = resolveBetOddsUsed(bet)
-          const potentialWin = Math.max(0, calculateBetPotentialReturn(bet) - bet.stakeTotal)
+          const potentialWin = calculateBetPotentialProfit(bet)
           const isSettled = bet.status === "settled"
           const canManuallyResolveOther = bet.betType === "other" && !isSettled
           const betSelectionLabel =
@@ -148,6 +148,7 @@ export function PersonalPanel({
                   <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs text-muted-foreground">
                     <span>{bet.betType}</span>
                     <span>{formatCurrency(bet.stakeTotal)}</span>
+                    {bet.isFreeBet ? <span>Free bet</span> : null}
                     {oddsUsed ? <span>@ {formatOdds(oddsUsed)}</span> : null}
                     <ChevronRight className="size-3" />
                     <span className="font-medium text-foreground">{formatCurrency(potentialWin)}</span>
@@ -224,7 +225,7 @@ export function PersonalPanel({
               <tbody>
                 {personalBets.map((bet) => {
                   const oddsUsed = resolveBetOddsUsed(bet)
-                  const potentialWin = Math.max(0, calculateBetPotentialReturn(bet) - bet.stakeTotal)
+                  const potentialWin = calculateBetPotentialProfit(bet)
                   const isSettled = bet.status === "settled"
                   const canManuallyResolveOther = bet.betType === "other" && !isSettled
                   const betRaceLabel =

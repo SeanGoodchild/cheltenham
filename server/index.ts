@@ -81,6 +81,7 @@ type BetDraftInput = {
     horseUid?: number
   }>
   stakeTotal: number
+  isFreeBet?: boolean
   oddsUsed?: number | null
   ewTerms?: EwTerms
 }
@@ -281,6 +282,10 @@ function roundMoney(value: number): number {
 
 function isValidOdds(value: number | undefined | null): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 1
+}
+
+function getBetRiskStake(bet: Pick<Bet, "stakeTotal" | "isFreeBet">): number {
+  return bet.isFreeBet ? 0 : bet.stakeTotal
 }
 
 function roundTo(value: number, decimals: number): number {
@@ -1155,12 +1160,12 @@ function isBetSettleable(bet: Bet): boolean {
   return bet.legs.every((leg) => leg.result !== "pending")
 }
 
-function calculateSingleReturn(stake: number, odds: number, legResult: LegResult): number {
+function calculateSingleReturn(stake: number, odds: number, legResult: LegResult, isFreeBet = false): number {
   if (legResult === "win") {
-    return stake * odds
+    return isFreeBet ? stake * Math.max(odds - 1, 0) : stake * odds
   }
   if (legResult === "void") {
-    return stake
+    return isFreeBet ? 0 : stake
   }
   return 0
 }
@@ -1170,19 +1175,32 @@ function calculateEachWayReturn(
   odds: number,
   legResult: LegResult,
   placeFraction: number,
+  isFreeBet = false,
 ): number {
   const winStake = stakeTotal / 2
   const placeStake = stakeTotal / 2
 
   const winReturn =
-    legResult === "win" ? winStake * odds : legResult === "void" ? winStake : 0
+    legResult === "win"
+      ? isFreeBet
+        ? winStake * Math.max(odds - 1, 0)
+        : winStake * odds
+      : legResult === "void"
+        ? isFreeBet
+          ? 0
+          : winStake
+        : 0
 
   const placeOdds = 1 + (odds - 1) * placeFraction
   const placeReturn =
     legResult === "win" || legResult === "place"
-      ? placeStake * placeOdds
+      ? isFreeBet
+        ? placeStake * Math.max(placeOdds - 1, 0)
+        : placeStake * placeOdds
       : legResult === "void"
-        ? placeStake
+        ? isFreeBet
+          ? 0
+          : placeStake
         : 0
 
   return winReturn + placeReturn
@@ -1212,7 +1230,10 @@ function resolveBetOddsUsed(bet: Pick<Bet, "betType" | "oddsUsed" | "legs">): nu
   return isValidOdds(firstLegOdds) ? firstLegOdds : null
 }
 
-function calculateAccumulatorReturn(stake: number, bet: Pick<Bet, "legs" | "oddsUsed" | "betType">): number {
+function calculateAccumulatorReturn(
+  stake: number,
+  bet: Pick<Bet, "legs" | "oddsUsed" | "betType" | "isFreeBet">,
+): number {
   const legs = bet.legs
   if (legs.some((leg) => leg.result === "lose")) {
     return 0
@@ -1237,7 +1258,7 @@ function calculateAccumulatorReturn(stake: number, bet: Pick<Bet, "legs" | "odds
   }, 1)
 
   const adjustedOdds = Math.max(1, combinedOdds / Math.max(1, voidOddsFactor))
-  return stake * adjustedOdds
+  return bet.isFreeBet ? stake * Math.max(adjustedOdds - 1, 0) : stake * adjustedOdds
 }
 
 function calculateBetReturn(bet: Bet): number {
@@ -1252,7 +1273,7 @@ function calculateBetReturn(bet: Bet): number {
   }
 
   if (bet.betType === "single" || bet.betType === "other") {
-    return calculateSingleReturn(bet.stakeTotal, oddsUsed, firstLeg.result)
+    return calculateSingleReturn(bet.stakeTotal, oddsUsed, firstLeg.result, bet.isFreeBet)
   }
 
   if (bet.betType === "each_way") {
@@ -1261,6 +1282,7 @@ function calculateBetReturn(bet: Bet): number {
       oddsUsed,
       firstLeg.result,
       bet.ewTerms?.placeFraction ?? 0.2,
+      bet.isFreeBet,
     )
   }
 
@@ -1270,7 +1292,7 @@ function calculateBetReturn(bet: Bet): number {
 function computeUserStats(user: UserProfile, bets: Bet[]): UserStats {
   const userBets = bets.filter((bet) => bet.userId === user.id)
   const settledBets = userBets.filter((bet) => bet.status === "settled")
-  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
+  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + getBetRiskStake(bet), 0))
   const oddsValues = userBets
     .map((bet) => resolveBetOddsUsed(bet))
     .filter((value): value is number => isValidOdds(value))
@@ -1323,7 +1345,7 @@ function computeGlobalStats(bets: Bet[], users: UserProfile[], atIso: string): G
       ? roundMoney(oddsValues.reduce((acc, value) => acc + value, 0) / oddsValues.length)
       : 0
   const settledBets = bets.filter((bet) => bet.status === "settled")
-  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
+  const settledStaked = roundMoney(settledBets.reduce((acc, bet) => acc + getBetRiskStake(bet), 0))
   const settledWins = settledBets.filter((bet) => (bet.totalReturn ?? 0) > 0).length
   const roasPct = settledStaked > 0 ? roundMoney((totalReturns / settledStaked) * 100) : 0
   const winPct = settledBets.length > 0 ? roundMoney((settledWins / settledBets.length) * 100) : 0
@@ -1516,6 +1538,7 @@ function mapBetDoc(raw: Record<string, unknown>, id: string): Bet {
       : [],
     legRaceIds: Array.isArray(raw.legRaceIds) ? raw.legRaceIds.map(String) : [],
     stakeTotal: Number(raw.stakeTotal ?? 0),
+    isFreeBet: Boolean(raw.isFreeBet ?? false),
     ewTerms:
       raw.ewTerms && typeof raw.ewTerms === "object"
         ? {
@@ -1679,6 +1702,7 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
       legs: [syntheticLeg],
       legRaceIds: [syntheticLeg.raceId],
       stakeTotal: Number(input.stakeTotal),
+      isFreeBet: Boolean(input.isFreeBet),
       ewTerms: undefined,
       lockAt: "2099-12-31T23:59:59.999Z",
       status: "open",
@@ -1764,6 +1788,7 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
     legs: formattedLegs,
     legRaceIds: [...new Set(formattedLegs.map((leg) => leg.raceId))],
     stakeTotal: Number(input.stakeTotal),
+    isFreeBet: Boolean(input.isFreeBet),
     ewTerms: normalizedBetType === "each_way" ? input.ewTerms : undefined,
     lockAt,
     status: "open",
@@ -1773,7 +1798,7 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
 
   if (isBetSettleable(baseBet)) {
     const totalReturn = Number(calculateBetReturn(baseBet).toFixed(2))
-    const profitLoss = Number((totalReturn - baseBet.stakeTotal).toFixed(2))
+    const profitLoss = Number((totalReturn - getBetRiskStake(baseBet)).toFixed(2))
     return {
       ...baseBet,
       status: "settled",
@@ -1910,9 +1935,9 @@ async function resolveOtherBetManually(betId: string, input: ManualOtherSettleIn
 
   const now = nowIso()
   const totalReturn = roundMoney(parsedReturn)
-  const profitLoss = roundMoney(totalReturn - bet.stakeTotal)
+  const profitLoss = roundMoney(totalReturn - getBetRiskStake(bet))
   const legResult: LegResult =
-    totalReturn === 0 ? "lose" : Math.abs(totalReturn - bet.stakeTotal) < 0.005 ? "void" : "win"
+    totalReturn === 0 ? "lose" : Math.abs(totalReturn - getBetRiskStake(bet)) < 0.005 ? "void" : "win"
 
   await betsCol(db)
     .doc(betId)
@@ -1977,7 +2002,7 @@ async function settleRace(
 
     if (isBetSettleable(updatedBet)) {
       const totalReturn = Number(calculateBetReturn(updatedBet).toFixed(2))
-      const profitLoss = Number((totalReturn - updatedBet.stakeTotal).toFixed(2))
+      const profitLoss = Number((totalReturn - getBetRiskStake(updatedBet)).toFixed(2))
       settledAnyBet = true
       batch.set(
         betsCol(db).doc(bet.id),
@@ -2423,7 +2448,7 @@ async function autoVoidNonRunnerLegs(
 
     if (isBetSettleable(updatedBet)) {
       const totalReturn = Number(calculateBetReturn(updatedBet).toFixed(2))
-      const profitLoss = Number((totalReturn - updatedBet.stakeTotal).toFixed(2))
+      const profitLoss = Number((totalReturn - getBetRiskStake(updatedBet)).toFixed(2))
       batch.set(
         betsCol(db).doc(bet.id),
         {
