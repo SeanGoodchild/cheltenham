@@ -118,6 +118,7 @@ type TelegramWebhookUpdate = {
     }
     reply_to_message?: {
       message_id?: number
+      text?: string
       from?: {
         id?: number
         is_bot?: boolean
@@ -570,6 +571,17 @@ function buildTelegramPromptInput(
   return cleaned || TELEGRAM_DEFAULT_SUMMARY_PROMPT
 }
 
+function buildTelegramConversationContext(message: NonNullable<TelegramWebhookUpdate["message"]>): string | null {
+  const replyText = message.reply_to_message?.text?.trim()
+  if (!replyText) {
+    return null
+  }
+
+  const replySender = message.reply_to_message?.from?.username?.trim() || "previous sender"
+  return `Reply context:
+The user is replying to a previous Telegram message from ${replySender}: "${replyText}"`
+}
+
 function formatCompactMoney(value: number): string {
   const sign = value > 0 ? "+" : value < 0 ? "-" : ""
   return `${sign}${formatMoneyGBP(Math.abs(value))}`
@@ -600,6 +612,9 @@ async function buildTrackerSummaryText(): Promise<string> {
   const computedUserStats = state.users.map((user) => computeUserStats(user, betsWithDerivedStatus))
   const computedGlobalStats = computeGlobalStats(betsWithDerivedStatus, state.users, now)
   const usersById = new Map(state.users.map((user) => [user.id, user]))
+  const settledBets = betsWithDerivedStatus.filter((bet) => bet.status === "settled")
+  const settledStakeTotal = roundMoney(settledBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
+  const totalProfitLoss = roundMoney(computedUserStats.reduce((acc, stat) => acc + stat.profitLoss, 0))
   const sortedUserStats = [...computedUserStats].sort((a, b) => {
     if (a.profitLoss !== b.profitLoss) {
       return b.profitLoss - a.profitLoss
@@ -613,6 +628,7 @@ async function buildTrackerSummaryText(): Promise<string> {
   const bottomUser = [...sortedUserStats].sort((a, b) => a.profitLoss - b.profitLoss)[0] ?? null
   const nextRace = getNextRaceForSummary(state.races)
   const openBets = betsWithDerivedStatus.filter((bet) => bet.status === "open" || bet.status === "locked")
+  const openStakeTotal = roundMoney(openBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
   const openBetsByUser = state.users
     .map((user) => ({
       name: user.displayName,
@@ -656,7 +672,7 @@ async function buildTrackerSummaryText(): Promise<string> {
 
   const lines = [
     "Cheltenham Tracker Summary",
-    `Overall: ${computedGlobalStats.betsPlaced} bets, ${formatMoneyGBP(computedGlobalStats.totalStaked)} staked, ${formatMoneyGBP(computedGlobalStats.totalReturns)} returns, P&L ${formatCompactMoney(computedGlobalStats.totalReturns - computedGlobalStats.totalStaked)}, win rate ${computedGlobalStats.winPct}%, ROAS ${computedGlobalStats.roasPct}%.`,
+    `Overall: ${computedGlobalStats.betsPlaced} bets, ${formatMoneyGBP(computedGlobalStats.totalStaked)} staked in total, ${formatMoneyGBP(settledStakeTotal)} settled stake, ${formatMoneyGBP(computedGlobalStats.totalReturns)} settled returns, settled P&L ${formatCompactMoney(totalProfitLoss)}, open stake ${formatMoneyGBP(openStakeTotal)}, win rate ${computedGlobalStats.winPct}%, ROAS ${computedGlobalStats.roasPct}%.`,
     topUser
       ? `Leader: ${(usersById.get(topUser.userId)?.displayName ?? topUser.userId)} ${formatCompactMoney(topUser.profitLoss)}.`
       : "Leader: none.",
@@ -674,13 +690,25 @@ async function buildTrackerSummaryText(): Promise<string> {
     nextRaceSelections.length > 0
       ? `Next race selections: ${nextRaceSelections.slice(0, 8).join(", ")}.`
       : "Next race selections: none.",
-    `Per user: ${sortedUserStats.map((stat) => `${usersById.get(stat.userId)?.displayName ?? stat.userId} P&L ${formatCompactMoney(stat.profitLoss)}, bets ${stat.betsPlaced}, staked ${formatMoneyGBP(stat.totalStaked)}, returns ${formatMoneyGBP(stat.totalReturns)}, win ${stat.winPct}%`).join(" | ")}.`,
+    `Per user: ${sortedUserStats.map((stat) => {
+      const userName = usersById.get(stat.userId)?.displayName ?? stat.userId
+      const userOpenStake = roundMoney(
+        openBets
+          .filter((bet) => bet.userId === stat.userId)
+          .reduce((acc, bet) => acc + bet.stakeTotal, 0),
+      )
+      return `${userName} settled P&L ${formatCompactMoney(stat.profitLoss)}, bets ${stat.betsPlaced}, total staked ${formatMoneyGBP(stat.totalStaked)}, settled returns ${formatMoneyGBP(stat.totalReturns)}, open stake ${formatMoneyGBP(userOpenStake)}, win ${stat.winPct}%`
+    }).join(" | ")}.`,
   ]
 
   return lines.join("\n")
 }
 
-async function generateGeminiReply(prompt: string, trackerSummary: string): Promise<string> {
+async function generateGeminiReply(
+  prompt: string,
+  trackerSummary: string,
+  conversationContext?: string | null,
+): Promise<string> {
   if (!GEMINI_API_KEY) {
     throw new Error("Gemini not configured (missing GEMINI_API_KEY)")
   }
@@ -708,7 +736,9 @@ async function generateGeminiReply(prompt: string, trackerSummary: string): Prom
                 text: `Tracker context:
 ${trackerSummary}
 
-User message:
+${conversationContext ? `${conversationContext}
+
+` : ""}User message:
 ${prompt}`,
               },
             ],
@@ -788,7 +818,8 @@ async function handleTelegramWebhook(request: Request): Promise<Response> {
   try {
     const trackerSummary = await buildTrackerSummaryText()
     const promptInput = buildTelegramPromptInput(message, botUsername)
-    replyText = await generateGeminiReply(promptInput, trackerSummary)
+    const conversationContext = buildTelegramConversationContext(message)
+    replyText = await generateGeminiReply(promptInput, trackerSummary, conversationContext)
   } catch (error) {
     console.error("telegram webhook gemini reply failed", error)
     replyText =
