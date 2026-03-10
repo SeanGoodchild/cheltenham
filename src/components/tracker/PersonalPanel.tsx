@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import type { ManualBetEditInput } from "@/lib/firebase"
 import { formatCurrency, formatOdds } from "@/lib/format"
-import { calculateBetPotentialProfit, resolveBetOddsUsed } from "@/lib/settlement"
+import { calculateBetPotentialProfit, getBetRiskStake, resolveBetOddsUsed } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
 import type { Bet, Race, UserProfile } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -99,7 +99,7 @@ export function PersonalPanel({
   }
 
   const personalBets = bets.filter((bet) => bet.userId === user.id)
-  const totalStaked = personalBets.reduce((acc, b) => acc + b.stakeTotal, 0)
+  const totalStaked = personalBets.reduce((acc, bet) => acc + getBetRiskStake(bet), 0)
   const settledBets = personalBets.filter((b) => b.status === "settled")
   const totalPnl = settledBets.reduce((acc, b) => acc + (b.profitLoss ?? 0), 0)
 

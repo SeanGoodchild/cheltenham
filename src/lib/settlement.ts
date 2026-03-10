@@ -300,7 +300,7 @@ export function computeUserStats(user: UserProfile, bets: Bet[]): UserStats {
       ? roundMoney(oddsValues.reduce((acc, value) => acc + value, 0) / oddsValues.length)
       : 0
 
-  const totalStaked = roundMoney(userBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
+  const totalStaked = roundMoney(userBets.reduce((acc, bet) => acc + getBetRiskStake(bet), 0))
   const totalReturns = roundMoney(settledBets.reduce((acc, bet) => acc + (bet.totalReturn ?? 0), 0))
   const profitLoss = roundMoney(totalReturns - settledStaked)
   const betsPlaced = userBets.length
