@@ -1,4 +1,4 @@
-import type { Race } from "./types"
+import type { Race } from "./types.js"
 
 export type SportingLifePageType = "racecards" | "results"
 

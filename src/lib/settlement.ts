@@ -9,8 +9,8 @@ import type {
   Race,
   UserProfile,
   UserStats,
-} from "./types"
-import { normalizeHorseName } from "./horse"
+} from "./types.js"
+import { normalizeHorseName } from "./horse.js"
 
 export type RaceOutcomeRange = {
   raceId: string

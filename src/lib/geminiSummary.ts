@@ -1,4 +1,4 @@
-import type { Bet, Race, UserProfile } from "./types"
+import type { Bet, Race, UserProfile } from "./types.js"
 import {
   calculateBetPotentialProfit,
   calculateBetPotentialReturn,
@@ -8,7 +8,7 @@ import {
   getBetSettlementRaceId,
   getDerivedBetStatus,
   resolveBetOddsUsed,
-} from "./settlement"
+} from "./settlement.js"
 
 type TrackerStateInput = {
   users: UserProfile[]

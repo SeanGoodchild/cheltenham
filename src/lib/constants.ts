@@ -1,4 +1,4 @@
-import type { Race, UserProfile } from "./types"
+import type { Race, UserProfile } from "./types.js"
 
 export const FIRESTORE_ROOT = "cl"
 export const CURRENT_SEASON = "2026"
