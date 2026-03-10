@@ -60,6 +60,17 @@ describe("sporting life parser", () => {
                 ride_status: "RUNNER",
                 finish_position: 0,
                 draw_number: 1,
+                betting: {
+                  current_odds: "33/1",
+                },
+                bookmakerOdds: [
+                  {
+                    bookmakerName: "Paddy Power",
+                    fractionalOdds: "33/1",
+                    decimalOdds: 34,
+                    bestOdds: true,
+                  },
+                ],
                 horse: { horse_reference: { id: 111 }, name: "Baron Noir" },
                 jockey: { name: "Thomas Bellamy" },
                 trainer: { name: "A King" },
@@ -99,6 +110,25 @@ describe("sporting life parser", () => {
         },
       ],
       runners: ["Baron Noir"],
+      oddsSnapshot: [
+        {
+          horseUid: 111,
+          horseName: "Baron Noir",
+          bestFractional: "33/1",
+          bestDecimal: 34,
+          bestBookmaker: "Paddy Power",
+          booksQuoted: 1,
+          impliedProbabilityPct: 2.94,
+          rank: 1,
+          isFavourite: true,
+        },
+      ],
+      marketFavourite: {
+        horseUid: 111,
+        horseName: "Baron Noir",
+        bestFractional: "33/1",
+        bestDecimal: 34,
+      },
       result: null,
     })
   })
@@ -120,12 +150,34 @@ describe("sporting life parser", () => {
               {
                 ride_status: "RUNNER",
                 finish_position: 4,
+                betting: {
+                  current_odds: "10/1",
+                },
+                bookmakerOdds: [
+                  {
+                    bookmakerName: "Sky Bet",
+                    fractionalOdds: "10/1",
+                    decimalOdds: 11,
+                    bestOdds: false,
+                  },
+                ],
                 horse: { horse_reference: { id: 444 }, name: "Red Hot Kisses" },
               },
               {
                 ride_status: "RUNNER",
                 finish_position: 1,
                 cloth_number: 6,
+                betting: {
+                  current_odds: "5/2",
+                },
+                bookmakerOdds: [
+                  {
+                    bookmakerName: "Paddy Power",
+                    fractionalOdds: "5/2",
+                    decimalOdds: 3.5,
+                    bestOdds: true,
+                  },
+                ],
                 horse: { horse_reference: { id: 111 }, name: "Magical Sky" },
                 jockey: { name: "Damyan Pillay" },
               },
@@ -137,11 +189,33 @@ describe("sporting life parser", () => {
               {
                 ride_status: "RUNNER",
                 finish_position: 2,
+                betting: {
+                  current_odds: "7/2",
+                },
+                bookmakerOdds: [
+                  {
+                    bookmakerName: "Betfair Sportsbook",
+                    fractionalOdds: "7/2",
+                    decimalOdds: 4.5,
+                    bestOdds: true,
+                  },
+                ],
                 horse: { horse_reference: { id: 222 }, name: "Whatastar" },
               },
               {
                 ride_status: "RUNNER",
                 finish_position: 3,
+                betting: {
+                  current_odds: "8/1",
+                },
+                bookmakerOdds: [
+                  {
+                    bookmakerName: "Sky Bet",
+                    fractionalOdds: "8/1",
+                    decimalOdds: 9,
+                    bestOdds: true,
+                  },
+                ],
                 horse: { horse_reference: { id: 555 }, name: "Sun In My Pocket" },
               },
             ],
@@ -198,6 +272,58 @@ describe("sporting life parser", () => {
         },
       ],
       runners: ["Red Hot Kisses", "Magical Sky", "Whatastar", "Sun In My Pocket"],
+      oddsSnapshot: [
+        {
+          horseUid: 111,
+          horseName: "Magical Sky",
+          bestFractional: "5/2",
+          bestDecimal: 3.5,
+          bestBookmaker: "Paddy Power",
+          booksQuoted: 1,
+          impliedProbabilityPct: 28.57,
+          rank: 1,
+          isFavourite: true,
+        },
+        {
+          horseUid: 222,
+          horseName: "Whatastar",
+          bestFractional: "7/2",
+          bestDecimal: 4.5,
+          bestBookmaker: "Betfair Sportsbook",
+          booksQuoted: 1,
+          impliedProbabilityPct: 22.22,
+          rank: 2,
+          isFavourite: false,
+        },
+        {
+          horseUid: 555,
+          horseName: "Sun In My Pocket",
+          bestFractional: "8/1",
+          bestDecimal: 9,
+          bestBookmaker: "Sky Bet",
+          booksQuoted: 1,
+          impliedProbabilityPct: 11.11,
+          rank: 3,
+          isFavourite: false,
+        },
+        {
+          horseUid: 444,
+          horseName: "Red Hot Kisses",
+          bestFractional: "10/1",
+          bestDecimal: 11,
+          bestBookmaker: "Sky Bet",
+          booksQuoted: 1,
+          impliedProbabilityPct: 9.09,
+          rank: 4,
+          isFavourite: false,
+        },
+      ],
+      marketFavourite: {
+        horseUid: 111,
+        horseName: "Magical Sky",
+        bestFractional: "5/2",
+        bestDecimal: 3.5,
+      },
       result: {
         winner: "Magical Sky",
         placed: ["Magical Sky", "Whatastar", "Sun In My Pocket"],

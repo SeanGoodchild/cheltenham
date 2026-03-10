@@ -18,6 +18,8 @@ export type ParsedSportingLifeRace = {
   raceStage: string
   runnersDetailed: NonNullable<Race["runnersDetailed"]>
   runners: string[]
+  oddsSnapshot: NonNullable<Race["oddsSnapshot"]>
+  marketFavourite?: Pick<NonNullable<Race["marketFavourite"]>, "horseName" | "horseUid" | "bestFractional" | "bestDecimal">
   result: Pick<Race["result"], "winner" | "placed"> | null
 }
 
@@ -35,6 +37,15 @@ type SportingLifeRide = {
   ride_status?: string
   finish_position?: number
   draw_number?: number
+  betting?: {
+    current_odds?: string
+  }
+  bookmakerOdds?: Array<{
+    bookmakerName?: string
+    fractionalOdds?: string
+    decimalOdds?: number
+    bestOdds?: boolean
+  }>
   horse?: {
     horse_reference?: {
       id?: number
@@ -53,6 +64,30 @@ type SportingLifeRacePayload = {
   race_summary?: SportingLifeRaceSummary
   rides?: SportingLifeRide[]
   number_of_placed_rides?: number
+}
+
+function roundTo(value: number, decimals: number): number {
+  const factor = 10 ** decimals
+  return Math.round(value * factor) / factor
+}
+
+function parseFractionalOdds(value: string | undefined): { fractional: string; decimal: number } | null {
+  const compact = String(value ?? "").replace(/\s+/g, "")
+  const match = compact.match(/^(\d+)\/(\d+)$/)
+  if (!match) {
+    return null
+  }
+
+  const numerator = Number(match[1])
+  const denominator = Number(match[2])
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
+    return null
+  }
+
+  return {
+    fractional: `${numerator}/${denominator}`,
+    decimal: roundTo(1 + numerator / denominator, 4),
+  }
 }
 
 function normalizeHorseName(name: string): string {
@@ -192,6 +227,88 @@ export function parseSportingLifeRaceFromNextData(nextData: unknown): ParsedSpor
     draw: ride.draw,
   }))
 
+  const oddsSnapshot = (Array.isArray(race.rides) ? race.rides : [])
+    .map((ride) => {
+      const horseNameRaw = String(ride.horse?.name ?? "").trim()
+      if (!horseNameRaw || isNonRunnerStatus(ride.ride_status)) {
+        return null
+      }
+
+      const matchedRunner = normalizedRunnersDetailed.find(
+        (runner) => normalizeHorseName(runner.horseName) === normalizeHorseName(horseNameRaw),
+      )
+      const bookmakerOdds = Array.isArray(ride.bookmakerOdds) ? ride.bookmakerOdds : []
+      const parsedBookmakerOdds = bookmakerOdds
+        .map((entry) => {
+          const fractional = typeof entry.fractionalOdds === "string" ? entry.fractionalOdds.trim() : ""
+          const decimal = Number(entry.decimalOdds)
+          const parsedFractional = parseFractionalOdds(fractional)
+          if (!fractional || !Number.isFinite(decimal) || decimal < 1) {
+            return null
+          }
+          return {
+            bookmakerName: typeof entry.bookmakerName === "string" ? entry.bookmakerName : undefined,
+            fractionalOdds: fractional,
+            decimalOdds: decimal,
+            bestOdds: Boolean(entry.bestOdds),
+            parsedFractional,
+          }
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+
+      const bestBookmakerOdds =
+        [...parsedBookmakerOdds].sort((a, b) => {
+          if (a.decimalOdds !== b.decimalOdds) {
+            return b.decimalOdds - a.decimalOdds
+          }
+          if (a.bestOdds !== b.bestOdds) {
+            return Number(b.bestOdds) - Number(a.bestOdds)
+          }
+          return (a.bookmakerName ?? "").localeCompare(b.bookmakerName ?? "")
+        })[0] ?? null
+
+      const fallbackCurrentOdds = parseFractionalOdds(ride.betting?.current_odds)
+      const bestFractional = bestBookmakerOdds?.fractionalOdds ?? fallbackCurrentOdds?.fractional ?? null
+      const bestDecimal = bestBookmakerOdds?.decimalOdds ?? fallbackCurrentOdds?.decimal ?? null
+
+      if (!matchedRunner || !bestFractional || !bestDecimal) {
+        return null
+      }
+
+      return {
+        horseName: matchedRunner.horseName,
+        horseUid: matchedRunner.horseUid,
+        bestFractional,
+        bestDecimal,
+        bestBookmaker: bestBookmakerOdds?.bookmakerName,
+        booksQuoted: parsedBookmakerOdds.length,
+        impliedProbabilityPct: roundTo((1 / bestDecimal) * 100, 2),
+        rank: 0,
+        isFavourite: false,
+      }
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    .sort((a, b) => {
+      if (a.bestDecimal !== b.bestDecimal) {
+        return a.bestDecimal - b.bestDecimal
+      }
+      return a.horseName.localeCompare(b.horseName)
+    })
+
+  if (oddsSnapshot.length > 0) {
+    const favouriteDecimal = oddsSnapshot[0].bestDecimal
+    let currentRank = 1
+
+    oddsSnapshot.forEach((entry, index) => {
+      if (index > 0 && entry.bestDecimal > oddsSnapshot[index - 1].bestDecimal) {
+        currentRank = index + 1
+      }
+
+      entry.rank = currentRank
+      entry.isFavourite = entry.bestDecimal === favouriteDecimal
+    })
+  }
+
   return {
     externalRaceId,
     name,
@@ -199,6 +316,16 @@ export function parseSportingLifeRaceFromNextData(nextData: unknown): ParsedSpor
     raceStage: String(summary?.race_stage ?? ""),
     runnersDetailed: normalizedRunnersDetailed,
     runners,
+    oddsSnapshot,
+    marketFavourite:
+      oddsSnapshot[0] === undefined
+        ? undefined
+        : {
+            horseName: oddsSnapshot[0].horseName,
+            horseUid: oddsSnapshot[0].horseUid,
+            bestFractional: oddsSnapshot[0].bestFractional,
+            bestDecimal: oddsSnapshot[0].bestDecimal,
+          },
     result: winner && placed.length > 0 ? { winner, placed } : null,
   }
 }

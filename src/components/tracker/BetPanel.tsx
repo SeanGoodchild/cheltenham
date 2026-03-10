@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { AlertCircle, Check, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
@@ -148,15 +148,6 @@ export function BetPanel({
   onDeleteBet,
 }: BetPanelProps) {
   const dayOrder: RaceDay[] = ["Tuesday", "Wednesday", "Thursday", "Friday"]
-  const [draft, setDraft] = useState<BetDraftForm>(() => newDraft(selectedUserId))
-  const [editingBetId, setEditingBetId] = useState<string | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [submitting, setSubmitting] = useState(false)
-  const [stakeInput, setStakeInput] = useState("")
-  const [placesPaidInput, setPlacesPaidInput] = useState("3")
-  const [placeFractionInput, setPlaceFractionInput] = useState("0.2")
-  const [quickRacePicks, setQuickRacePicks] = useState<Record<number, { day?: RaceDay; time?: string }>>({})
-  const [accaOddsManuallySet, setAccaOddsManuallySet] = useState(false)
   const racesSorted = useMemo(
     () => [...races].sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime()),
     [races],
@@ -172,6 +163,22 @@ export function BetPanel({
       racesSorted.find((race) => race.status !== "settled" && race.status !== "result_pending"),
     [racesSorted],
   )
+  const [draft, setDraft] = useState<BetDraftForm>(() => newDraft(selectedUserId, nextRace))
+  const [editingBetId, setEditingBetId] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [stakeInput, setStakeInput] = useState("")
+  const [placesPaidInput, setPlacesPaidInput] = useState("3")
+  const [placeFractionInput, setPlaceFractionInput] = useState("0.2")
+  const [quickRacePicks, setQuickRacePicks] = useState<Record<number, { day?: RaceDay; time?: string }>>({
+    0: buildQuickPickForRace(nextRace),
+  })
+  const [accaOddsManuallySet, setAccaOddsManuallySet] = useState(false)
+  const nextRaceRef = useRef(nextRace)
+
+  useEffect(() => {
+    nextRaceRef.current = nextRace
+  }, [nextRace])
 
   const resetDraft = (userId: string) => {
     const nextDraft = newDraft(userId, nextRace)
@@ -185,16 +192,16 @@ export function BetPanel({
   }
 
   useEffect(() => {
-    const nextDraft = newDraft(selectedUserId, nextRace)
+    const nextDraft = newDraft(selectedUserId, nextRaceRef.current)
     setDraft(nextDraft)
     setStakeInput("")
     setPlacesPaidInput(String(nextDraft.ewTerms?.placesPaid ?? 3))
     setPlaceFractionInput(String(nextDraft.ewTerms?.placeFraction ?? 0.2))
     setEditingBetId(null)
-    setQuickRacePicks({ 0: buildQuickPickForRace(nextRace) })
+    setQuickRacePicks({ 0: buildQuickPickForRace(nextRaceRef.current) })
     setActionError(null)
     setAccaOddsManuallySet(false)
-  }, [nextRace, selectedUserId])
+  }, [selectedUserId])
 
   const hydrateFromBet = (bet: Bet) => {
     setEditingBetId(bet.id)

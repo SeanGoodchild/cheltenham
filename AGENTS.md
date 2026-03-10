@@ -36,12 +36,14 @@ This file captures repo-specific guidance so future changes stay aligned with th
   - fetch Sporting Life HTML
   - extract `__NEXT_DATA__`
   - parse `props.pageProps.race`
-  - map into the existing `Race` model
+  - map runners, results, and odds into the existing `Race` model
 - `Race.source` may be:
   - `sportinglife`
   - `manual`
   - legacy `cloudfront` values may still exist in stored data
-- Odds import remains a separate concern from the Sporting Life page import.
+- Odds now come from the Sporting Life `__NEXT_DATA__` payload.
+  - Use `rides[].bookmakerOdds` as the primary source
+  - `rides[].betting.current_odds` is only a fallback if bookmaker rows are missing
 
 ## Server / Realtime
 - Backend entrypoint: `server/index.ts`

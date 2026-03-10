@@ -65,7 +65,7 @@ export type Race = {
     runId: string
   }
   oddsMeta?: {
-    source: "irishracing"
+    source: "irishracing" | "sportinglife"
     importedAt: string
     sourceUrl: string
     runId: string
@@ -100,7 +100,7 @@ export type Race = {
     horseUid?: number
     bestFractional: string
     bestDecimal: number
-    source: "irishracing"
+    source: "irishracing" | "sportinglife"
     importedAt: string
   }
   runners: string[]

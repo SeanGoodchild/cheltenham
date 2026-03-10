@@ -72,8 +72,7 @@ bun run dev:full
 ## Race Data
 - Cheltenham 2026 race import URLs live in [`public/race_urls.txt`](./public/race_urls.txt).
 - The server fetches Sporting Life race pages, extracts the `__NEXT_DATA__` JSON blob, and maps `props.pageProps.race` into the app's `Race` model.
-- This import path is used for runner data and result detection.
-- Odds remain a separate import/merge step.
+- This import path is used for runner data, result detection, and odds extraction from the `rides[].bookmakerOdds` / `rides[].betting` fields.
 
 ## Implemented Firestore Shape
 - `cl/2026` (season metadata)
@@ -125,10 +124,6 @@ bun run dev:full
   - `TELEGRAM_CHAT_ID` (still used for outbound race notifications)
   - `GEMINI_API_KEY`
   - `TELEGRAM_WEBHOOK_SECRET`
-- Optional env vars:
-  - `ODDS_IMPORT_TIMEOUT_MS`
-  - `ODDS_IMPORT_CONCURRENCY`
-  - `ODDS_IMPORT_USER_AGENT`
 - If `VITE_API_BASE_URL` is currently set to `http://localhost:3001` in Vercel, remove it.
 - Note: `/api/stream` (SSE) works via function streaming, but platform duration limits can still force reconnects in some environments.
 - `/api/telegram/webhook` accepts Telegram updates and replies with a one-off Gemini response in direct messages, when explicitly mentioned in a group chat, or when a user replies to a bot message, using a concise Cheltenham tracker state summary as context.

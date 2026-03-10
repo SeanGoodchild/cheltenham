@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react"
-import { ArrowDownRight, ArrowLeft, ArrowRight, ArrowUpRight, Clock, Minus } from "lucide-react"
+import { useMemo, useState } from "react"
+import { ArrowDownRight, ArrowLeft, ArrowRight, ArrowUpRight, Clock, Flag, Minus } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCurrency, formatMarketOdds, formatPercent } from "@/lib/format"
@@ -279,19 +279,9 @@ function CurrentRaceCard({
     [orderedRaces],
   )
   const [selectedRaceId, setSelectedRaceId] = useState<string | null>(defaultRaceId)
-
-  useEffect(() => {
-    if (!selectedRaceId) {
-      setSelectedRaceId(defaultRaceId)
-      return
-    }
-
-    if (!orderedRaces.some((race) => race.id === selectedRaceId)) {
-      setSelectedRaceId(defaultRaceId)
-    }
-  }, [defaultRaceId, orderedRaces, selectedRaceId])
-
-  const selectedRaceIndex = orderedRaces.findIndex((race) => race.id === selectedRaceId)
+  const resolvedSelectedRaceId =
+    selectedRaceId && orderedRaces.some((race) => race.id === selectedRaceId) ? selectedRaceId : defaultRaceId
+  const selectedRaceIndex = orderedRaces.findIndex((race) => race.id === resolvedSelectedRaceId)
   const currentRace =
     (selectedRaceIndex >= 0 ? orderedRaces[selectedRaceIndex] : undefined) ??
     orderedRaces.find((race) => race.id === defaultRaceId)
@@ -314,6 +304,9 @@ function CurrentRaceCard({
   const worstHorseName = currentRaceRange ? extractScenarioHorseName(currentRaceRange.worstScenario) : ""
   const canGoPrevious = selectedRaceIndex > 0
   const canGoNext = selectedRaceIndex >= 0 && selectedRaceIndex < orderedRaces.length - 1
+  const isDefaultRaceView = currentRace.id === defaultRaceId
+  const raceHeaderLabel = isDefaultRaceView ? "Next Race" : "Selected Race"
+  const RaceHeaderIcon = isDefaultRaceView ? Clock : Flag
 
   return (
     <Card className="shadow-xs">
@@ -321,8 +314,10 @@ function CurrentRaceCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <Clock className="size-3.5 text-muted-foreground" />
-              <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Next Race</span>
+              <RaceHeaderIcon className="size-3.5 text-muted-foreground" />
+              <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                {raceHeaderLabel}
+              </span>
             </div>
             <div className="mt-1 text-base font-bold">{currentRace.name}</div>
             <div className="mt-0.5 text-sm text-muted-foreground">{formatIso(currentRace.offTime, "EEE HH:mm")}</div>

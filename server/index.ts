@@ -13,6 +13,11 @@ import {
   parseSportingLifeRacePageHtml,
   parseSportingLifeRaceUrl,
 } from "../src/lib/sportingLife.js"
+import {
+  buildGeminiRaceResultNotificationSummary,
+  buildGeminiRaceResultNotificationText,
+  buildGeminiTrackerSummaryText,
+} from "../src/lib/geminiSummary.js"
 import type {
   Bet,
   BetLeg,
@@ -31,11 +36,6 @@ import type {
 const PORT = Number(process.env.PORT ?? 3001)
 const APP_ORIGIN = process.env.APP_ORIGIN ?? "http://localhost:5173"
 const IMPORT_LOCK_STALE_MINUTES = Number(process.env.IMPORT_LOCK_STALE_MINUTES ?? 10)
-const IRISHRACING_BASE_URL = process.env.IRISHRACING_BASE_URL ?? "https://www.irishracing.com/cheltenham/odds"
-const ODDS_IMPORT_TIMEOUT_MS = Number(process.env.ODDS_IMPORT_TIMEOUT_MS ?? 8000)
-const ODDS_IMPORT_CONCURRENCY = Number(process.env.ODDS_IMPORT_CONCURRENCY ?? 2)
-const ODDS_IMPORT_USER_AGENT =
-  process.env.ODDS_IMPORT_USER_AGENT ?? "CheltenhamBetTracker/1.0 (+manual-refresh)"
 const SPORTING_LIFE_IMPORT_TIMEOUT_MS = Number(process.env.SPORTING_LIFE_IMPORT_TIMEOUT_MS ?? 8000)
 const SPORTING_LIFE_USER_AGENT =
   process.env.SPORTING_LIFE_USER_AGENT ??
@@ -62,6 +62,15 @@ However there's a mapping due to nicknames. Telegram First Name -> Tracker User:
 The group as a whole goes by the name 'Cash Lads' or 'CLs' for short.
 If you detect that the message is insincere, or making a joke rather than a genuine ask, you can respond simply with only the water pistol emoji 🔫.
 If web search would materially improve the answer, you may use it. If the user asks for links or sources, include direct source URLs in the answer text when you can. Do not rely on internal Google grounding URLs.`
+const GEMINI_RACE_RESULT_SYSTEM_INSTRUCTION = `You are writing a short Telegram post for the Cash Lads group immediately after a Cheltenham race has been settled.
+
+You will be given structured tracker context focused on the just-settled race, current standings, and the next race.
+Summarise what happened in the last race, who won or lost money on it, the running overall picture, and the details of the next race when useful.
+Prefer concrete names and numbers from the provided context.
+Keep it punchy and readable for a group chat, usually 2 to 4 short sentences.
+Do not invent details that are missing from the context.
+Do not mention JSON or say "based on the context".
+If nobody had a toot on the settled race, say that briefly and move on to the standings or next race.`
 
 type TrackerState = {
   users: UserProfile[]
@@ -160,6 +169,13 @@ type TelegramGetMeResponse = {
   description?: string
 }
 
+type GenerateGeminiReplyOptions = {
+  systemInstruction?: string
+  enableSearch?: boolean
+  temperature?: number
+  maxOutputTokens?: number
+}
+
 const geminiRequestTimestamps: number[] = []
 let telegramBotUsernamePromise: Promise<string> | null = null
 
@@ -176,9 +192,6 @@ type RaceImportSummary = {
   oddsRacesFailed: number
   oddsRowsParsed: number
 }
-
-type OddsSnapshot = NonNullable<Race["oddsSnapshot"]>
-type OddsSnapshotEntry = OddsSnapshot[number]
 
 function nowIso(): string {
   return new Date().toISOString()
@@ -304,121 +317,6 @@ function formatMoneyGBP(value: number): string {
   }).format(value)
 }
 
-function ordinalSuffix(day: number): string {
-  const tens = day % 100
-  if (tens >= 11 && tens <= 13) {
-    return "th"
-  }
-  switch (day % 10) {
-    case 1:
-      return "st"
-    case 2:
-      return "nd"
-    case 3:
-      return "rd"
-    default:
-      return "th"
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
-}
-
-function decodeHtmlEntities(value: string): string {
-  return value
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&#x27;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-}
-
-function stripTags(value: string): string {
-  return value.replace(/<[^>]*>/g, " ")
-}
-
-function bookmakerNameById(bookmakerId: string): string | undefined {
-  const names: Record<string, string> = {
-    "3": "Boylesports",
-    "11": "Bet365",
-    "12": "William Hill",
-    "51": "LiveScoreBet",
-    "5": "Coral",
-    "2": "Paddy Power",
-    "15": "Betfred",
-    "1": "Betfair",
-    "23": "Betway",
-  }
-
-  return names[bookmakerId]
-}
-
-function parseFractionalOdds(value: string): { fractional: string; decimal: number } | null {
-  const compact = value.replace(/\s+/g, "")
-  const match = compact.match(/^(\d+)\/(\d+)$/)
-  if (!match) {
-    return null
-  }
-  const numerator = Number(match[1])
-  const denominator = Number(match[2])
-  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
-    return null
-  }
-
-  return {
-    fractional: `${numerator}/${denominator}`,
-    decimal: roundTo(1 + numerator / denominator, 4),
-  }
-}
-
-function buildIrishRacingDayToken(offTimeIso: string): string {
-  const date = new Date(offTimeIso)
-  const weekday = new Intl.DateTimeFormat("en-GB", {
-    weekday: "short",
-    timeZone: APP_TIMEZONE,
-  }).format(date)
-  const day = Number(
-    new Intl.DateTimeFormat("en-GB", {
-      day: "numeric",
-      timeZone: APP_TIMEZONE,
-    }).format(date),
-  )
-  const month = new Intl.DateTimeFormat("en-GB", {
-    month: "short",
-    timeZone: APP_TIMEZONE,
-  }).format(date)
-  const year = new Intl.DateTimeFormat("en-GB", {
-    year: "numeric",
-    timeZone: APP_TIMEZONE,
-  }).format(date)
-
-  return `${weekday}-${day}${ordinalSuffix(day)}-${month}-${year}`
-}
-
-function buildIrishRacingTimeToken(offTimeIso: string): string {
-  const date = new Date(offTimeIso)
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: APP_TIMEZONE,
-  }).formatToParts(date)
-
-  const hour = parts.find((part) => part.type === "hour")?.value ?? "00"
-  const minute = parts.find((part) => part.type === "minute")?.value ?? "00"
-  return `${hour}${minute}`
-}
-
-function buildIrishRacingOddsUrl(offTimeIso: string): string {
-  const dayToken = buildIrishRacingDayToken(offTimeIso)
-  const timeToken = buildIrishRacingTimeToken(offTimeIso)
-  return `${IRISHRACING_BASE_URL}/${dayToken}/${timeToken}/antepost`
-}
-
 function formatRaceTimeForMessage(iso: string): string {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) {
@@ -446,10 +344,6 @@ function toRaceDay(iso: string): RaceDay {
 
 function runnerToDisplayName(name: string): string {
   return formatHorseName(name)
-}
-
-function pickRandom<T>(values: readonly T[]): T {
-  return values[Math.floor(Math.random() * values.length)] as T
 }
 
 async function sendTelegramMessage(input: TelegramSendMessageInput): Promise<void> {
@@ -627,126 +521,14 @@ function buildTelegramSenderContext(message: NonNullable<TelegramWebhookUpdate["
   return `Sender: ${senderName || `@${username}`}`
 }
 
-function formatCompactMoney(value: number): string {
-  const sign = value > 0 ? "+" : value < 0 ? "-" : ""
-  return `${sign}${formatMoneyGBP(Math.abs(value))}`
-}
-
-function getNextRaceForSummary(races: Race[], now = Date.now()): Race | null {
-  const upcoming = races
-    .filter((race) => race.status !== "settled" && new Date(race.offTime).getTime() > now)
-    .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0]
-  if (upcoming) {
-    return upcoming
-  }
-
-  return (
-    races
-      .filter((race) => race.status !== "settled")
-      .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0] ?? null
-  )
-}
-
 async function buildTrackerSummaryText(): Promise<string> {
   const state = currentState ?? (await loadState())
-  const now = nowIso()
-  const betsWithDerivedStatus = state.bets.map((bet) => ({
-    ...bet,
-    status: getDerivedBetStatus(bet, now),
-  }))
-  const computedUserStats = state.users.map((user) => computeUserStats(user, betsWithDerivedStatus))
-  const computedGlobalStats = computeGlobalStats(betsWithDerivedStatus, state.users, now)
-  const usersById = new Map(state.users.map((user) => [user.id, user]))
-  const settledBets = betsWithDerivedStatus.filter((bet) => bet.status === "settled")
-  const settledStakeTotal = roundMoney(settledBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
-  const totalProfitLoss = roundMoney(computedUserStats.reduce((acc, stat) => acc + stat.profitLoss, 0))
-  const sortedUserStats = [...computedUserStats].sort((a, b) => {
-    if (a.profitLoss !== b.profitLoss) {
-      return b.profitLoss - a.profitLoss
-    }
-    const aName = usersById.get(a.userId)?.displayName ?? a.userId
-    const bName = usersById.get(b.userId)?.displayName ?? b.userId
-    return aName.localeCompare(bName)
-  })
+  return buildGeminiTrackerSummaryText(state, nowIso())
+}
 
-  const topUser = sortedUserStats[0] ?? null
-  const bottomUser = [...sortedUserStats].sort((a, b) => a.profitLoss - b.profitLoss)[0] ?? null
-  const nextRace = getNextRaceForSummary(state.races)
-  const openBets = betsWithDerivedStatus.filter((bet) => bet.status === "open" || bet.status === "locked")
-  const openStakeTotal = roundMoney(openBets.reduce((acc, bet) => acc + bet.stakeTotal, 0))
-  const openBetsByUser = state.users
-    .map((user) => ({
-      name: user.displayName,
-      count: openBets.filter((bet) => bet.userId === user.id).length,
-    }))
-    .filter((entry) => entry.count > 0)
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-
-  const nextRaceStakeByUser =
-    nextRace === null
-      ? []
-      : state.users
-          .map((user) => ({
-            name: user.displayName,
-            totalStake: roundMoney(
-              openBets
-                .filter((bet) => bet.userId === user.id && bet.legs.some((leg) => leg.raceId === nextRace.id))
-                .reduce((acc, bet) => acc + bet.stakeTotal, 0),
-            ),
-          }))
-          .filter((entry) => entry.totalStake > 0)
-          .sort((a, b) => b.totalStake - a.totalStake || a.name.localeCompare(b.name))
-
-  const nextRaceSelections =
-    nextRace === null
-      ? []
-      : openBets
-          .filter((bet) => bet.legs.some((leg) => leg.raceId === nextRace.id))
-          .map((bet) => {
-            const leg = bet.legs.find((entry) => entry.raceId === nextRace.id)
-            const userName = usersById.get(bet.userId)?.displayName ?? bet.userId
-            return leg ? `${userName}: ${leg.selectionName}` : null
-          })
-          .filter((value): value is string => Boolean(value))
-
-  const raceStatusCounts = {
-    upcoming: state.races.filter((race) => race.lifecycle === "upcoming").length,
-    inProgress: state.races.filter((race) => race.lifecycle === "in_progress").length,
-    complete: state.races.filter((race) => race.lifecycle === "complete").length,
-  }
-
-  const lines = [
-    "Cheltenham Tracker Summary",
-    `Overall: ${computedGlobalStats.betsPlaced} bets, ${formatMoneyGBP(computedGlobalStats.totalStaked)} staked in total, ${formatMoneyGBP(settledStakeTotal)} settled stake, ${formatMoneyGBP(computedGlobalStats.totalReturns)} settled returns, settled P&L ${formatCompactMoney(totalProfitLoss)}, open stake ${formatMoneyGBP(openStakeTotal)}, win rate ${computedGlobalStats.winPct}%, ROAS ${computedGlobalStats.roasPct}%.`,
-    topUser
-      ? `Leader: ${(usersById.get(topUser.userId)?.displayName ?? topUser.userId)} ${formatCompactMoney(topUser.profitLoss)}.`
-      : "Leader: none.",
-    bottomUser
-      ? `Biggest loser: ${(usersById.get(bottomUser.userId)?.displayName ?? bottomUser.userId)} ${formatCompactMoney(bottomUser.profitLoss)}.`
-      : "Biggest loser: none.",
-    `Race status: ${raceStatusCounts.upcoming} upcoming, ${raceStatusCounts.inProgress} in progress, ${raceStatusCounts.complete} complete.`,
-    nextRace
-      ? `Next race: ${nextRace.name} at ${formatRaceTimeForMessage(nextRace.offTime)} (${nextRace.status}). Favourite: ${nextRace.marketFavourite ? `${nextRace.marketFavourite.horseName} ${nextRace.marketFavourite.bestFractional}` : "unknown"}.`
-      : "Next race: none scheduled.",
-    `Open toots: ${openBets.length}.${openBetsByUser.length > 0 ? ` By user: ${openBetsByUser.map((entry) => `${entry.name} ${entry.count}`).join(", ")}.` : ""}`,
-    nextRaceStakeByUser.length > 0
-      ? `Next race stake by user: ${nextRaceStakeByUser.map((entry) => `${entry.name} ${formatMoneyGBP(entry.totalStake)}`).join(", ")}.`
-      : "Next race stake by user: none.",
-    nextRaceSelections.length > 0
-      ? `Next race selections: ${nextRaceSelections.slice(0, 8).join(", ")}.`
-      : "Next race selections: none.",
-    `Per user: ${sortedUserStats.map((stat) => {
-      const userName = usersById.get(stat.userId)?.displayName ?? stat.userId
-      const userOpenStake = roundMoney(
-        openBets
-          .filter((bet) => bet.userId === stat.userId)
-          .reduce((acc, bet) => acc + bet.stakeTotal, 0),
-      )
-      return `${userName} settled P&L ${formatCompactMoney(stat.profitLoss)}, bets ${stat.betsPlaced}, total staked ${formatMoneyGBP(stat.totalStaked)}, settled returns ${formatMoneyGBP(stat.totalReturns)}, open stake ${formatMoneyGBP(userOpenStake)}, win ${stat.winPct}%`
-    }).join(" | ")}.`,
-  ]
-
-  return lines.join("\n")
+async function loadTrackerStateSnapshot(): Promise<Pick<TrackerState, "users" | "races" | "bets">> {
+  const [users, races, bets] = await Promise.all([getUsers(), getRaces(), getBets()])
+  return { users, races, bets }
 }
 
 async function generateGeminiReply(
@@ -754,6 +536,7 @@ async function generateGeminiReply(
   trackerSummary: string,
   senderContext?: string | null,
   conversationContext?: string | null,
+  options?: GenerateGeminiReplyOptions,
 ): Promise<string> {
   if (!GEMINI_API_KEY) {
     throw new Error("Gemini not configured (missing GEMINI_API_KEY)")
@@ -772,9 +555,9 @@ async function generateGeminiReply(
       },
       body: JSON.stringify({
         systemInstruction: {
-          parts: [{ text: GEMINI_SYSTEM_INSTRUCTION }],
+          parts: [{ text: options?.systemInstruction ?? GEMINI_SYSTEM_INSTRUCTION }],
         },
-        tools: [{ google_search: {} }],
+        ...(options?.enableSearch === false ? {} : { tools: [{ google_search: {} }] }),
         contents: [
           {
             role: "user",
@@ -794,8 +577,8 @@ ${prompt}`,
           },
         ],
         generationConfig: {
-          temperature: 0.4,
-          maxOutputTokens: 220,
+          temperature: options?.temperature ?? 0.4,
+          maxOutputTokens: options?.maxOutputTokens ?? 220,
         },
       }),
     },
@@ -824,6 +607,70 @@ ${prompt}`,
   }
 
   return trimTelegramReply(reply)
+}
+
+function buildRaceResultFallbackMessage(
+  summary: ReturnType<typeof buildGeminiRaceResultNotificationSummary>,
+  options?: { isTest?: boolean },
+): string {
+  const users = Object.values(summary.race.users).sort((a, b) => {
+    if (a.profitLoss !== b.profitLoss) {
+      return b.profitLoss - a.profitLoss
+    }
+    return a.displayName.localeCompare(b.displayName)
+  })
+  const topRaceWinner = users.find((user) => user.profitLoss > 0)
+  const topRaceLoser = [...users].reverse().find((user) => user.profitLoss < 0)
+  const leader = summary.standings[0]
+  const introPrefix = options?.isTest ? "[TEST] " : ""
+
+  return [
+    `${introPrefix}${summary.race.name} is settled. Winner: ${summary.race.winner ?? "unknown"}.`,
+    topRaceWinner || topRaceLoser
+      ? `On this race: ${topRaceWinner ? `${topRaceWinner.displayName} led with ${formatMoneyGBP(topRaceWinner.profitLoss)}.` : ""}${topRaceWinner && topRaceLoser ? " " : ""}${topRaceLoser ? `${topRaceLoser.displayName} dropped ${formatMoneyGBP(Math.abs(topRaceLoser.profitLoss))}.` : ""}`
+      : "On this race: no tracked swing.",
+    leader
+      ? `${leader.displayName} now leads overall at ${formatMoneyGBP(leader.profitLoss)}.`
+      : "Overall lead: none.",
+    summary.nextRace
+      ? `Next race is ${summary.nextRace.name} at ${formatRaceTimeForMessage(summary.nextRace.offTime)}.`
+      : "No next race is scheduled.",
+  ].join("\n\n")
+}
+
+async function generateRaceResultTelegramMessage(
+  raceId: string,
+  options?: { isTest?: boolean },
+): Promise<{ message: string; summary: ReturnType<typeof buildGeminiRaceResultNotificationSummary> }> {
+  const state = await loadTrackerStateSnapshot()
+  const summary = buildGeminiRaceResultNotificationSummary(state, raceId, nowIso())
+  const trackerSummary = buildGeminiRaceResultNotificationText(state, raceId, nowIso())
+
+  try {
+    const message = await generateGeminiReply(
+      options?.isTest ? "Write a test-mode post-race Telegram update for this settled race." : "Write the post-race Telegram update for the group.",
+      trackerSummary,
+      null,
+      null,
+      {
+        systemInstruction: GEMINI_RACE_RESULT_SYSTEM_INSTRUCTION,
+        enableSearch: false,
+        temperature: 0.5,
+        maxOutputTokens: 180,
+      },
+    )
+
+    return {
+      message: options?.isTest ? `[TEST] ${message}` : message,
+      summary,
+    }
+  } catch (error) {
+    console.error("race result gemini message failed", error)
+    return {
+      message: buildRaceResultFallbackMessage(summary, options),
+      summary,
+    }
+  }
 }
 
 async function handleTelegramWebhook(request: Request): Promise<Response> {
@@ -895,58 +742,7 @@ async function dispatchRaceResultTelegramNotification(
   settledAt: string,
   options?: { isTest?: boolean },
 ): Promise<void> {
-  const [races, users, bets] = await Promise.all([getRaces(), getUsers(), getBets()])
-  const notificationNow = nowIso()
-  const betsWithDerivedStatus = bets.map((bet) => ({
-    ...bet,
-    status: getDerivedBetStatus(bet, notificationNow),
-  }))
-  const userStats = users.map((user) => computeUserStats(user, betsWithDerivedStatus))
-  const usersById = new Map(users.map((user) => [user.id, user]))
-  const leader = [...userStats]
-    .sort((a, b) => {
-      if (a.profitLoss !== b.profitLoss) {
-        return b.profitLoss - a.profitLoss
-      }
-      const aName = usersById.get(a.userId)?.displayName ?? a.userId
-      const bName = usersById.get(b.userId)?.displayName ?? b.userId
-      return aName.localeCompare(bName)
-    })
-    .at(0)
-
-  const leaderName = leader ? usersById.get(leader.userId)?.displayName ?? leader.userId : "No one"
-  const leaderProfit = leader?.profitLoss ?? 0
-  const nextRace =
-    races
-      .filter((entry) => entry.status !== "settled" && new Date(entry.offTime).getTime() > Date.now())
-      .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0] ??
-    races
-      .filter(
-        (entry) =>
-          entry.status !== "settled" && new Date(entry.offTime).getTime() > new Date(race.offTime).getTime(),
-      )
-      .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0]
-  const nextRaceTime = nextRace ? formatRaceTimeForMessage(nextRace.offTime) : "TBC"
-
-  const intros = [
-    `Result is in for ${race.name}.`,
-    `${race.name} is settled.`,
-    `That one is done: ${race.name}.`,
-    `${race.name} has just landed.`,
-  ] as const
-  const leaderDescriptions = [
-    "commanding",
-    "narrow",
-    "scrappy",
-    "cheeky",
-    "storming",
-    "well-earned",
-  ] as const
-
-  const introPrefix = options?.isTest ? "[TEST] " : ""
-  const message = `${introPrefix}${pickRandom(intros)} Next race starts at ${nextRaceTime}.
-
-${leaderName} is leading the pack with a ${pickRandom(leaderDescriptions)} ${formatMoneyGBP(leaderProfit)} profit.`
+  const { message, summary } = await generateRaceResultTelegramMessage(race.id, options)
 
   try {
     await sendTelegramNotificationMessage(message)
@@ -961,11 +757,11 @@ ${leaderName} is leading the pack with a ${pickRandom(leaderDescriptions)} ${for
             raceName: race.name,
             winner: race.result.winner,
             settledAt,
-            nextRaceTime,
-            leaderName,
-            leaderProfit,
+            summary,
             message,
           },
+          error: null,
+          processingAt: null,
         },
         { merge: true },
       )
@@ -975,24 +771,25 @@ ${leaderName} is leading the pack with a ${pickRandom(leaderDescriptions)} ${for
     })
   } catch (error) {
     const failureMessage = error instanceof Error ? error.message : String(error)
+    const notificationSnapshot = await notificationsCol(db).doc(notificationId).get()
+    const notificationRaw = (notificationSnapshot.data() as Record<string, unknown> | undefined) ?? {}
     await notificationsCol(db)
       .doc(notificationId)
       .set(
         {
           status: "failed",
           error: failureMessage,
-          retries: 1,
+          retries: Number(notificationRaw.retries ?? 0) + 1,
           updatedAt: nowIso(),
           payload: {
             raceId: race.id,
             raceName: race.name,
             winner: race.result.winner,
             settledAt,
-            nextRaceTime,
-            leaderName,
-            leaderProfit,
+            summary,
             message,
           },
+          processingAt: null,
         },
         { merge: true },
       )
@@ -1002,6 +799,51 @@ ${leaderName} is leading the pack with a ${pickRandom(leaderDescriptions)} ${for
       error: failureMessage,
     })
   }
+}
+
+async function claimRaceResultNotificationDispatch(
+  race: Race,
+  settledAt: string,
+): Promise<{ notificationId: string; shouldSend: boolean }> {
+  const notificationRef = notificationsCol(db).doc(`race_result_${race.id}`)
+  const claimedAt = nowIso()
+  const staleProcessingMs = 5 * 60 * 1000
+
+  return db.runTransaction(async (transaction) => {
+    const snapshot = await transaction.get(notificationRef)
+    const raw = (snapshot.data() as Record<string, unknown> | undefined) ?? {}
+    const status = typeof raw.status === "string" ? raw.status : "pending"
+    const processingAt = typeof raw.processingAt === "string" ? raw.processingAt : undefined
+    const processingFresh =
+      processingAt !== undefined && Date.now() - new Date(processingAt).getTime() < staleProcessingMs
+
+    if (status === "sent" || processingFresh) {
+      return { notificationId: notificationRef.id, shouldSend: false }
+    }
+
+    transaction.set(
+      notificationRef,
+      {
+        id: notificationRef.id,
+        eventType: "race_result_settled",
+        payload: {
+          raceId: race.id,
+          raceName: race.name,
+          winner: race.result.winner,
+          settledAt,
+        },
+        status: "pending",
+        error: null,
+        processingAt: claimedAt,
+        retries: Number(raw.retries ?? 0),
+        createdAt: typeof raw.createdAt === "string" ? raw.createdAt : claimedAt,
+        updatedAt: claimedAt,
+      },
+      { merge: true },
+    )
+
+    return { notificationId: notificationRef.id, shouldSend: true }
+  })
 }
 
 async function sendTestRaceResultTelegram(input: TestRaceMessageInput): Promise<{
@@ -1474,12 +1316,12 @@ function mapRaceDoc(raw: Record<string, unknown>, id: string): Race {
           }
         : undefined,
     oddsMeta:
-      oddsMetaRaw.source === "irishracing" &&
+      (oddsMetaRaw.source === "irishracing" || oddsMetaRaw.source === "sportinglife") &&
       typeof oddsMetaRaw.importedAt === "string" &&
       typeof oddsMetaRaw.sourceUrl === "string" &&
       typeof oddsMetaRaw.runId === "string"
         ? {
-            source: "irishracing",
+            source: oddsMetaRaw.source,
             importedAt: String(oddsMetaRaw.importedAt),
             sourceUrl: String(oddsMetaRaw.sourceUrl),
             runId: String(oddsMetaRaw.runId),
@@ -1504,7 +1346,10 @@ function mapRaceDoc(raw: Record<string, unknown>, id: string): Race {
               : undefined,
             bestFractional: String(marketFavouriteRaw.bestFractional),
             bestDecimal: Number(marketFavouriteRaw.bestDecimal),
-            source: "irishracing",
+            source:
+              marketFavouriteRaw.source === "sportinglife" || marketFavouriteRaw.source === "irishracing"
+                ? marketFavouriteRaw.source
+                : "sportinglife",
             importedAt:
               typeof marketFavouriteRaw.importedAt === "string"
                 ? String(marketFavouriteRaw.importedAt)
@@ -2042,23 +1887,10 @@ async function settleRace(
   }
 
   if (race.status !== "settled") {
-    const notificationRef = notificationsCol(db).doc()
-    await notificationRef.set({
-      id: notificationRef.id,
-      eventType: "race_result_settled",
-      payload: {
-        raceId,
-        raceName: race.name,
-        winner: race.result.winner,
-        settledAt: now,
-      },
-      status: "pending",
-      retries: 0,
-      createdAt: now,
-      updatedAt: now,
-    })
-
-    await dispatchRaceResultTelegramNotification(notificationRef.id, race, now)
+    const notificationClaim = await claimRaceResultNotificationDispatch(race, now)
+    if (notificationClaim.shouldSend) {
+      await dispatchRaceResultTelegramNotification(notificationClaim.notificationId, race, now)
+    }
     await writeEvent("race_settled", { raceId })
   }
 
@@ -2244,135 +2076,6 @@ async function fetchSportingLifePage(url: string): Promise<string> {
   }
 }
 
-async function fetchTextWithTimeout(url: string, timeoutMs: number): Promise<string> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
-
-  try {
-    const response = await fetch(url, {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": ODDS_IMPORT_USER_AGENT,
-        Accept: "text/html,application/xhtml+xml",
-      },
-    })
-    if (!response.ok) {
-      throw new Error(`Odds source request failed (${response.status})`)
-    }
-    return await response.text()
-  } finally {
-    clearTimeout(timeoutId)
-  }
-}
-
-function parseIrishRacingOddsHtml(html: string, race: Race): { snapshot: OddsSnapshot; rowsParsed: number } {
-  if (!html.includes('id="bettable"')) {
-    return { snapshot: [], rowsParsed: 0 }
-  }
-
-  const mobileSectionIndex = html.indexOf('<div class="hidden-lg hidden-md">')
-  const tableHtml = mobileSectionIndex > 0 ? html.slice(0, mobileSectionIndex) : html
-  const horseRegex = /<td[^>]*id="(\d+)xr"[^>]*class="horse"[^>]*>[\s\S]*?">([^<]+)<\/a>/gi
-  const snapshotByHorse = new Map<string, OddsSnapshotEntry>()
-  let rowsParsed = 0
-
-  while (true) {
-    const horseMatch = horseRegex.exec(tableHtml)
-    if (!horseMatch) {
-      break
-    }
-    const runnerId = horseMatch[1]
-    const horseNameRaw = decodeHtmlEntities(horseMatch[2]).replace(/\s+/g, " ").trim()
-    if (!horseNameRaw) {
-      continue
-    }
-    rowsParsed += 1
-
-    const normalizedHorseName = normalizeHorseName(horseNameRaw)
-    if (!normalizedHorseName) {
-      continue
-    }
-
-    let bestFractional: string | undefined
-    let bestDecimal = -1
-    let bestBookmaker: string | undefined
-    let booksQuoted = 0
-
-    const priceCellRegex = new RegExp(
-      `<td[^>]*id="${runnerId}x(\\d+)"[^>]*>([\\s\\S]*?)(?=<td\\b|<\\/tr>)`,
-      "gi",
-    )
-    while (true) {
-      const cellMatch = priceCellRegex.exec(tableHtml)
-      if (!cellMatch) {
-        break
-      }
-
-      const bookmakerId = cellMatch[1]
-      const cellText = decodeHtmlEntities(stripTags(cellMatch[2])).replace(/\s+/g, " ").trim()
-      if (!cellText || cellText === "-") {
-        continue
-      }
-
-      const parsedOdds = parseFractionalOdds(cellText)
-      if (!parsedOdds) {
-        continue
-      }
-
-      booksQuoted += 1
-      if (parsedOdds.decimal > bestDecimal) {
-        bestDecimal = parsedOdds.decimal
-        bestFractional = parsedOdds.fractional
-        bestBookmaker = bookmakerNameById(bookmakerId)
-      }
-    }
-
-    if (!bestFractional || bestDecimal <= 0 || booksQuoted === 0) {
-      continue
-    }
-
-    const matchedRunner = race.runnersDetailed?.find(
-      (runner) => normalizeHorseName(runner.horseName) === normalizedHorseName,
-    )
-    const horseName = matchedRunner?.horseName ?? runnerToDisplayName(horseNameRaw)
-
-    snapshotByHorse.set(normalizedHorseName, {
-      horseName,
-      horseUid: matchedRunner?.horseUid,
-      bestFractional,
-      bestDecimal,
-      bestBookmaker,
-      booksQuoted,
-      impliedProbabilityPct: roundTo((1 / bestDecimal) * 100, 2),
-      rank: 0,
-      isFavourite: false,
-    })
-  }
-
-  const snapshot = [...snapshotByHorse.values()].sort((a, b) => {
-    if (a.bestDecimal !== b.bestDecimal) {
-      return a.bestDecimal - b.bestDecimal
-    }
-    return a.horseName.localeCompare(b.horseName)
-  })
-
-  if (snapshot.length === 0) {
-    return { snapshot: [], rowsParsed }
-  }
-
-  const favouriteDecimal = snapshot[0].bestDecimal
-  let currentRank = 1
-  snapshot.forEach((entry, index) => {
-    if (index > 0 && entry.bestDecimal > snapshot[index - 1].bestDecimal) {
-      currentRank = index + 1
-    }
-    entry.rank = currentRank
-    entry.isFavourite = entry.bestDecimal === favouriteDecimal
-  })
-
-  return { snapshot, rowsParsed }
-}
-
 function hasRunnerDiff(
   previous: NonNullable<Race["runnersDetailed"]> | undefined,
   next: NonNullable<Race["runnersDetailed"]>,
@@ -2480,79 +2183,6 @@ async function autoVoidNonRunnerLegs(
   return voidedLegs
 }
 
-type OddsImportTarget = {
-  raceId: string
-  raceName: string
-  offTime: string
-  runnersDetailed: NonNullable<Race["runnersDetailed"]>
-}
-
-async function importIrishRacingOddsForRace(
-  target: OddsImportTarget,
-  runId: string,
-): Promise<{
-  updated: boolean
-  rowsParsed: number
-  sourceUrl: string
-  warning?: string
-}> {
-  const sourceUrl = buildIrishRacingOddsUrl(target.offTime)
-  const html = await fetchTextWithTimeout(sourceUrl, ODDS_IMPORT_TIMEOUT_MS)
-  const parsed = parseIrishRacingOddsHtml(html, {
-    id: target.raceId,
-    season: CURRENT_SEASON,
-    day: toRaceDay(target.offTime),
-    offTime: target.offTime,
-    course: "Cheltenham",
-    name: target.raceName,
-    runners: target.runnersDetailed.filter((runner) => !runner.nonRunner).map((runner) => runner.horseName),
-    runnersDetailed: target.runnersDetailed,
-    status: "scheduled",
-    lifecycle: deriveRaceLifecycle(target.offTime, EMPTY_RACE_RESULT, nowIso()),
-    result: EMPTY_RACE_RESULT,
-  })
-
-  if (parsed.snapshot.length === 0) {
-    return {
-      updated: false,
-      rowsParsed: parsed.rowsParsed,
-      sourceUrl,
-      warning: `odds_unavailable:${target.raceId}:${parsed.rowsParsed}:${sourceUrl}`,
-    }
-  }
-
-  const importedAt = nowIso()
-  await racesCol(db)
-    .doc(target.raceId)
-    .set(
-      {
-        oddsMeta: {
-          source: "irishracing",
-          importedAt,
-          sourceUrl,
-          runId,
-          marketType: "antepost",
-        },
-        oddsSnapshot: parsed.snapshot,
-        marketFavourite: {
-          horseName: parsed.snapshot[0].horseName,
-          horseUid: parsed.snapshot[0].horseUid,
-          bestFractional: parsed.snapshot[0].bestFractional,
-          bestDecimal: parsed.snapshot[0].bestDecimal,
-          source: "irishracing",
-          importedAt,
-        },
-      },
-      { merge: true },
-    )
-
-  return {
-    updated: true,
-    rowsParsed: parsed.rowsParsed,
-    sourceUrl,
-  }
-}
-
 async function runRaceImport(runId: string): Promise<RaceImportRun> {
   const startedAt = nowIso()
   const summary = createEmptyImportSummary()
@@ -2605,6 +2235,8 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
       raceStage: string
       runnersDetailed: NonNullable<Race["runnersDetailed"]>
       runners: string[]
+      oddsSnapshot: NonNullable<Race["oddsSnapshot"]>
+      marketFavourite?: Pick<NonNullable<Race["marketFavourite"]>, "horseName" | "horseUid" | "bestFractional" | "bestDecimal">
       result: Pick<Race["result"], "winner" | "placed"> | null
     }> = []
 
@@ -2639,7 +2271,6 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
     })
 
     const racesNeedingSettlement: string[] = []
-    const oddsTargets: OddsImportTarget[] = []
 
     for (const sourceRace of parsedPages) {
         const externalRaceId = sourceRace.externalRaceId
@@ -2657,6 +2288,8 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
 
         const runnersDetailed = sourceRace.runnersDetailed
         const runners = sourceRace.runners
+        const oddsSnapshot = sourceRace.oddsSnapshot
+        const marketFavourite = sourceRace.marketFavourite
         const parsedResult = sourceRace.result
 
         if (hasRunnerDiff(existingRace?.runnersDetailed, runnersDetailed)) {
@@ -2703,10 +2336,29 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
               sourceUrl: sourceRace.sourceUrl,
               runId,
             },
+            oddsMeta:
+              oddsSnapshot.length > 0
+                ? {
+                    source: "sportinglife",
+                    importedAt: nowIso(),
+                    sourceUrl: sourceRace.sourceUrl,
+                    runId,
+                    marketType: "antepost",
+                  }
+                : undefined,
             importLock: existingRace?.importLock ?? {
               lockedByManualOverride: false,
             },
             runnersDetailed,
+            oddsSnapshot,
+            marketFavourite:
+              marketFavourite === undefined
+                ? undefined
+                : {
+                    ...marketFavourite,
+                    source: "sportinglife",
+                    importedAt: nowIso(),
+                  },
             runners,
             status: raceStatus,
             lifecycle,
@@ -2728,39 +2380,14 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
           racesNeedingSettlement.push(raceRef.id)
         }
 
-        oddsTargets.push({
-          raceId: raceRef.id,
-          raceName: raceTitle,
-          offTime,
-          runnersDetailed,
-        })
-    }
-
-    summary.oddsRacesAttempted = oddsTargets.length
-    for (let index = 0; index < oddsTargets.length; index += Math.max(1, ODDS_IMPORT_CONCURRENCY)) {
-      const batch = oddsTargets.slice(index, index + Math.max(1, ODDS_IMPORT_CONCURRENCY))
-      await Promise.all(
-        batch.map(async (target) => {
-          await sleep(Math.floor(Math.random() * 120))
-          try {
-            const outcome = await importIrishRacingOddsForRace(target, runId)
-            summary.oddsRowsParsed += outcome.rowsParsed
-            if (outcome.warning) {
-              if (!outcome.updated) {
-                summary.oddsRacesFailed += 1
-              }
-              warnings.push(outcome.warning)
-            }
-            if (outcome.updated) {
-              summary.oddsRacesUpdated += 1
-            }
-          } catch (oddsError) {
-            summary.oddsRacesFailed += 1
-            const message = oddsError instanceof Error ? oddsError.message : "Unknown odds import error"
-            warnings.push(`odds_fetch_failed:${target.raceId}:${message}`)
-          }
-        }),
-      )
+        summary.oddsRacesAttempted += 1
+        summary.oddsRowsParsed += oddsSnapshot.length
+        if (oddsSnapshot.length > 0) {
+          summary.oddsRacesUpdated += 1
+        } else {
+          summary.oddsRacesFailed += 1
+          warnings.push(`sportinglife_odds_unavailable:${raceRef.id}:${sourceRace.sourceUrl}`)
+        }
     }
 
     for (const raceId of racesNeedingSettlement) {
