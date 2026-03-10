@@ -99,6 +99,7 @@ describe("sporting life parser", () => {
           jockeyName: "Thomas Bellamy",
           trainerName: "A King",
           draw: 1,
+          finishPosition: undefined,
         },
         {
           horseUid: 222,
@@ -107,6 +108,7 @@ describe("sporting life parser", () => {
           jockeyName: undefined,
           trainerName: undefined,
           draw: undefined,
+          finishPosition: undefined,
         },
       ],
       runners: ["Baron Noir"],
@@ -237,6 +239,7 @@ describe("sporting life parser", () => {
           jockeyName: undefined,
           trainerName: undefined,
           draw: undefined,
+          finishPosition: 4,
         },
         {
           horseUid: 111,
@@ -245,6 +248,7 @@ describe("sporting life parser", () => {
           jockeyName: "Damyan Pillay",
           trainerName: undefined,
           draw: undefined,
+          finishPosition: 1,
         },
         {
           horseUid: 333,
@@ -253,6 +257,7 @@ describe("sporting life parser", () => {
           jockeyName: undefined,
           trainerName: undefined,
           draw: undefined,
+          finishPosition: undefined,
         },
         {
           horseUid: 222,
@@ -261,6 +266,7 @@ describe("sporting life parser", () => {
           jockeyName: undefined,
           trainerName: undefined,
           draw: undefined,
+          finishPosition: 2,
         },
         {
           horseUid: 555,
@@ -269,6 +275,7 @@ describe("sporting life parser", () => {
           jockeyName: undefined,
           trainerName: undefined,
           draw: undefined,
+          finishPosition: 3,
         },
       ],
       runners: ["Red Hot Kisses", "Magical Sky", "Whatastar", "Sun In My Pocket"],

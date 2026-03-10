@@ -83,6 +83,7 @@ export type Race = {
     jockeyName?: string
     trainerName?: string
     draw?: number
+    finishPosition?: number
   }>
   oddsSnapshot?: Array<{
     horseName: string

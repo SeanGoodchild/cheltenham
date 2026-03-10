@@ -7,6 +7,7 @@ import {
   calculateBetReturn,
   computeGlobalStats,
   computeUserStats,
+  deriveLegResult,
   deriveLockAt,
   getDerivedBetStatus,
   isBetSettleable,
@@ -80,6 +81,29 @@ describe("settlement rules", () => {
     })
 
     expect(calculateBetReturn(bet)).toBe(10)
+  })
+
+  it("treats a runner finishing inside paid each-way places as a place", () => {
+    const race: Race = {
+      ...races[0],
+      runnersDetailed: [
+        {
+          horseUid: 123,
+          horseName: "Horse A",
+          nonRunner: false,
+          finishPosition: 4,
+        },
+      ],
+      result: { winner: "Horse B", placed: ["Horse B", "Horse C", "Horse D"], source: "manual" },
+    }
+
+    expect(
+      deriveLegResult("Horse A", race, {
+        horseUid: 123,
+        betType: "each_way",
+        ewTerms: { placesPaid: 4, placeFraction: 0.2 },
+      }),
+    ).toBe("place")
   })
 
   it("calculates accumulator return with void leg as 1.0", () => {

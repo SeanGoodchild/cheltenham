@@ -225,6 +225,7 @@ export function parseSportingLifeRaceFromNextData(nextData: unknown): ParsedSpor
     jockeyName: ride.jockeyName,
     trainerName: ride.trainerName,
     draw: ride.draw,
+    finishPosition: ride.finishPosition > 0 ? ride.finishPosition : undefined,
   }))
 
   const oddsSnapshot = (Array.isArray(race.rides) ? race.rides : [])

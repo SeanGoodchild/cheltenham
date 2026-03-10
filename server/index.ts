@@ -972,8 +972,14 @@ function validateRunnerSelection(selectionName: string, race: Race, horseUid?: n
   return Boolean(runner && !runner.nonRunner)
 }
 
-function deriveLegResult(selectionName: string, race: Race, horseUid?: number): LegResult {
-  if (horseUid && race.runnersDetailed?.some((runner) => runner.horseUid === horseUid && runner.nonRunner)) {
+function deriveLegResult(
+  selectionName: string,
+  race: Race,
+  horseUid?: number,
+  options?: { betType?: BetType; ewTerms?: EwTerms },
+): LegResult {
+  const matchedRunner = findRaceRunner(race, selectionName, horseUid)
+  if (matchedRunner?.nonRunner) {
     return "void"
   }
 
@@ -984,6 +990,16 @@ function deriveLegResult(selectionName: string, race: Race, horseUid?: number): 
   }
 
   if (race.result.placed.some((entry) => normalizeHorseName(entry) === normalizedSelection)) {
+    return "place"
+  }
+
+  const placesPaid = Number(options?.ewTerms?.placesPaid ?? 0)
+  if (
+    options?.betType === "each_way" &&
+    typeof matchedRunner?.finishPosition === "number" &&
+    matchedRunner.finishPosition > 0 &&
+    matchedRunner.finishPosition <= placesPaid
+  ) {
     return "place"
   }
 
@@ -1258,6 +1274,9 @@ function mapRaceDoc(raw: Record<string, unknown>, id: string): Race {
         trainerName:
           typeof row.trainerName === "string" ? row.trainerName : typeof row.trainer_name === "string" ? row.trainer_name : undefined,
         draw: Number.isFinite(Number(row.draw)) ? Number(row.draw) : undefined,
+        finishPosition: Number.isFinite(Number(row.finishPosition ?? row.finish_position))
+          ? Number(row.finishPosition ?? row.finish_position)
+          : undefined,
       }
     })
     .filter((runner): runner is NonNullable<typeof runner> => Boolean(runner))
@@ -1613,7 +1632,10 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
       horseUid: matchedRunner?.horseUid,
       result:
         lifecycle === "complete"
-          ? deriveLegResult(matchedRunner?.horseName ?? leg.selectionName, race, matchedRunner?.horseUid)
+          ? deriveLegResult(matchedRunner?.horseName ?? leg.selectionName, race, matchedRunner?.horseUid, {
+              betType: normalizedBetType,
+              ewTerms: input.ewTerms,
+            })
           : ("pending" as const),
     }
   })
@@ -1855,7 +1877,10 @@ async function settleRace(
       }
       return {
         ...leg,
-        result: deriveLegResult(leg.selectionName, race, leg.horseUid),
+        result: deriveLegResult(leg.selectionName, race, leg.horseUid, {
+          betType: bet.betType,
+          ewTerms: bet.ewTerms,
+        }),
       }
     })
 

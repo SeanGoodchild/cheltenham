@@ -41,6 +41,7 @@ import type { Bet, GlobalStats, Race, RaceImportRun, UserProfile } from "@/lib/t
 import { cn } from "@/lib/utils"
 
 const USER_STORAGE_KEY = "cheltenham.selectedUser"
+const LAST_TAB_STORAGE_KEY = "cheltenham.lastTab"
 type AppTab = "new-bet" | "main-cashboard" | "user-summary" | "wellbeing"
 type MainBoardUserView = { mode: "all" | "me" }
 const MINUTE_MS = 60_000
@@ -63,6 +64,16 @@ const SIDEBAR_TABS: TabDef[] = [
 ]
 
 const ALL_TABS: TabDef[] = [...PRIMARY_TABS, ...SIDEBAR_TABS]
+
+function getStoredTab(): AppTab {
+  if (typeof window === "undefined") {
+    return "new-bet"
+  }
+
+  const stored = window.localStorage.getItem(LAST_TAB_STORAGE_KEY)
+  const isValid = ALL_TABS.some((tab) => tab.id === stored)
+  return isValid ? (stored as AppTab) : "new-bet"
+}
 
 const USER_AVATAR_SRC_BY_ID: Record<string, string> = {
   fabs: "/avatars/Fabs.png",
@@ -282,7 +293,7 @@ export function App() {
     return window.localStorage.getItem(USER_STORAGE_KEY) ?? ""
   })
   const [actionError, setActionError] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<AppTab>("new-bet")
+  const [activeTab, setActiveTab] = useState<AppTab>(() => getStoredTab())
   const [raceImportRun, setRaceImportRun] = useState<RaceImportRun | null>(null)
   const [refreshingRaceData, setRefreshingRaceData] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -449,6 +460,14 @@ export function App() {
   useEffect(() => {
     raceImportRunRef.current = raceImportRun
   }, [raceImportRun])
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+
+    window.localStorage.setItem(LAST_TAB_STORAGE_KEY, activeTab)
+  }, [activeTab])
 
   useEffect(() => {
     if (typeof document === "undefined") {

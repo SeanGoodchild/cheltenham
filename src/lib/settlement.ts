@@ -4,6 +4,8 @@ import type {
   Bet,
   BetLeg,
   BetStatus,
+  BetType,
+  EwTerms,
   GlobalStats,
   LegResult,
   Race,
@@ -71,14 +73,45 @@ export function validateRunnerSelection(selectionName: string, race: Race): bool
   return race.runners.some((runner) => normalizeHorseName(runner) === normalizedSelection)
 }
 
-export function deriveLegResult(selectionName: string, race: Race): LegResult {
+function findRunnerResult(race: Race, selectionName: string, horseUid?: number) {
+  if (typeof horseUid === "number") {
+    const byUid = race.runnersDetailed?.find((runner) => runner.horseUid === horseUid)
+    if (byUid) {
+      return byUid
+    }
+  }
+
   const normalizedSelection = normalizeHorseName(selectionName)
+  return race.runnersDetailed?.find((runner) => normalizeHorseName(runner.horseName) === normalizedSelection)
+}
+
+export function deriveLegResult(
+  selectionName: string,
+  race: Race,
+  options?: { horseUid?: number; betType?: BetType; ewTerms?: EwTerms },
+): LegResult {
+  const normalizedSelection = normalizeHorseName(selectionName)
+  const matchedRunner = findRunnerResult(race, selectionName, options?.horseUid)
+
+  if (matchedRunner?.nonRunner) {
+    return "void"
+  }
 
   if (race.result.winner && normalizeHorseName(race.result.winner) === normalizedSelection) {
     return "win"
   }
 
   if (race.result.placed.some((entry) => normalizeHorseName(entry) === normalizedSelection)) {
+    return "place"
+  }
+
+  const placesPaid = Number(options?.ewTerms?.placesPaid ?? 0)
+  if (
+    options?.betType === "each_way" &&
+    typeof matchedRunner?.finishPosition === "number" &&
+    matchedRunner.finishPosition > 0 &&
+    matchedRunner.finishPosition <= placesPaid
+  ) {
     return "place"
   }
 
