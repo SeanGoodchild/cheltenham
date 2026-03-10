@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCurrency, formatMarketOdds, formatPercent } from "@/lib/format"
 import { normalizeHorseName } from "@/lib/horse"
-import { calculateBetPotentialProfit } from "@/lib/settlement"
+import { calculateBetPotentialProfit, getBetSettlementRaceId } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
 import type { Bet, Race, UserProfile, UserStats } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -59,25 +59,6 @@ function getInitials(name: string): string {
   return parts.slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "?"
 }
 
-function getSettlementRaceId(bet: Bet, races: Race[]): string | null {
-  if (!bet.legs.length) {
-    return null
-  }
-
-  const legsWithRace = bet.legs
-    .map((leg) => ({
-      raceId: leg.raceId,
-      offTime: races.find((race) => race.id === leg.raceId)?.offTime,
-    }))
-    .filter((entry): entry is { raceId: string; offTime: string } => Boolean(entry.offTime))
-
-  if (!legsWithRace.length) {
-    return null
-  }
-
-  return legsWithRace.sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime()).at(-1)?.raceId ?? null
-}
-
 function buildRankMap(entries: Array<{ userId: string; displayName: string; profitLoss: number }>): Map<string, number> {
   const sorted = [...entries].sort((a, b) => {
     if (a.profitLoss !== b.profitLoss) {
@@ -97,7 +78,23 @@ function buildRankMap(entries: Array<{ userId: string; displayName: string; prof
   return rankByUser
 }
 
-function buildNextRaceRunnerRows(nextRace: Race, bets: Bet[], users: UserProfile[]): NextRaceRunnerRow[] {
+function calculateProfitIfRaceWins(bet: Bet, raceId: string, races: Race[]): number {
+  if (bet.betType !== "accumulator") {
+    return calculateBetPotentialProfit(bet)
+  }
+
+  if (getBetSettlementRaceId(bet, races) !== raceId) {
+    return 0
+  }
+
+  if (bet.legs.some((leg) => leg.result === "lose" || leg.result === "place")) {
+    return 0
+  }
+
+  return calculateBetPotentialProfit(bet)
+}
+
+function buildNextRaceRunnerRows(nextRace: Race, races: Race[], bets: Bet[], users: UserProfile[]): NextRaceRunnerRow[] {
   const usersById = new Map(users.map((user) => [user.id, user]))
   const favouriteName = normalizeHorseName(nextRace.marketFavourite?.horseName ?? "")
   const oddsByUid = new Map<number, string>()
@@ -132,6 +129,9 @@ function buildNextRaceRunnerRows(nextRace: Race, bets: Bet[], users: UserProfile
       if (!user) {
         return []
       }
+      if (bet.status === "settled" && getBetSettlementRaceId(bet, races) !== nextRace.id) {
+        return []
+      }
 
       const hasMatchingLeg = bet.legs.some((leg) => {
         if (leg.raceId !== nextRace.id) {
@@ -154,7 +154,7 @@ function buildNextRaceRunnerRows(nextRace: Race, bets: Bet[], users: UserProfile
         userAvatarSrc: getUserAvatarSrc(user.id),
         betType: bet.betType,
         stakeTotal: bet.stakeTotal,
-        potentialProfit: calculateBetPotentialProfit(bet),
+        potentialProfit: calculateProfitIfRaceWins(bet, nextRace.id, races),
       }]
     })
 
@@ -296,7 +296,7 @@ function CurrentRaceCard({
 
   const raceBets = allBets.filter((bet) => bet.legs.some((leg) => leg.raceId === currentRace.id))
   const raceStaked = raceBets.reduce((acc, bet) => acc + bet.stakeTotal, 0)
-  const runnerRows = buildNextRaceRunnerRows(currentRace, allBets, allUsers)
+  const runnerRows = buildNextRaceRunnerRows(currentRace, races, allBets, allUsers)
   const clFavourite = buildClFavouriteSummary(runnerRows)
   const canGoPrevious = selectedRaceIndex > 0
   const canGoNext = selectedRaceIndex >= 0 && selectedRaceIndex < orderedRaces.length - 1
@@ -468,7 +468,7 @@ export function MainBoard({
     bets
       .filter((bet) => bet.status === "settled")
       .forEach((bet) => {
-        const settleRaceId = getSettlementRaceId(bet, races)
+        const settleRaceId = getBetSettlementRaceId(bet, races)
         if (settleRaceId !== latestSettledRace.id) {
           return
         }
