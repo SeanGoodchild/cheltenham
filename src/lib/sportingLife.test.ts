@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   extractSportingLifeNextDataJson,
+  isSportingLifeRaceStageFinal,
   parseSportingLifeRacePageHtml,
   parseSportingLifeRaceUrl,
 } from "@/lib/sportingLife"
@@ -40,6 +41,13 @@ describe("sporting life parser", () => {
       raceId: 906791,
       slug: "join-the-race",
     })
+  })
+
+  it("only treats weighed in results as final", () => {
+    expect(isSportingLifeRaceStageFinal("WEIGHEDIN")).toBe(true)
+    expect(isSportingLifeRaceStageFinal("RESULT")).toBe(false)
+    expect(isSportingLifeRaceStageFinal(" weighed-in ")).toBe(true)
+    expect(isSportingLifeRaceStageFinal(undefined)).toBe(false)
   })
 
   it("parses a pre-race Cheltenham page shape", () => {

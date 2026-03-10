@@ -66,6 +66,16 @@ type SportingLifeRacePayload = {
   number_of_placed_rides?: number
 }
 
+export function normalizeSportingLifeRaceStage(value: string | undefined): string {
+  return String(value ?? "")
+    .replace(/[^a-z]/gi, "")
+    .toUpperCase()
+}
+
+export function isSportingLifeRaceStageFinal(value: string | undefined): boolean {
+  return normalizeSportingLifeRaceStage(value) === "WEIGHEDIN"
+}
+
 function roundTo(value: number, decimals: number): number {
   const factor = 10 ** decimals
   return Math.round(value * factor) / factor

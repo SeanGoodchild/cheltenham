@@ -31,6 +31,7 @@ type RunnerBackerDetail = {
 type NextRaceRunnerRow = {
   horseName: string
   horseUid?: number
+  finishPosition?: number
   oddsLabel?: string
   oddsValue?: number
   isFavourite: boolean
@@ -94,6 +95,21 @@ function calculateProfitIfRaceWins(bet: Bet, raceId: string, races: Race[]): num
   return calculateBetPotentialProfit(bet)
 }
 
+function formatFinishPosition(position: number): string {
+  const suffix =
+    position % 100 >= 11 && position % 100 <= 13
+      ? "th"
+      : position % 10 === 1
+        ? "st"
+        : position % 10 === 2
+          ? "nd"
+          : position % 10 === 3
+            ? "rd"
+            : "th"
+
+  return `${position}${suffix}`
+}
+
 function buildNextRaceRunnerRows(nextRace: Race, races: Race[], bets: Bet[], users: UserProfile[]): NextRaceRunnerRow[] {
   const usersById = new Map(users.map((user) => [user.id, user]))
   const favouriteName = normalizeHorseName(nextRace.marketFavourite?.horseName ?? "")
@@ -119,8 +135,9 @@ function buildNextRaceRunnerRows(nextRace: Race, races: Race[], bets: Bet[], use
           .map((runner) => ({
             horseName: runner.horseName,
             horseUid: runner.horseUid,
+            finishPosition: runner.finishPosition,
           }))
-      : nextRace.runners.map((horseName) => ({ horseName, horseUid: undefined }))
+      : nextRace.runners.map((horseName) => ({ horseName, horseUid: undefined, finishPosition: undefined }))
 
   return runners.map((runner) => {
     const normalizedRunner = normalizeHorseName(runner.horseName)
@@ -161,6 +178,7 @@ function buildNextRaceRunnerRows(nextRace: Race, races: Race[], bets: Bet[], use
     return {
       horseName: runner.horseName,
       horseUid: runner.horseUid,
+      finishPosition: runner.finishPosition,
       oddsLabel:
         (typeof runner.horseUid === "number" ? oddsByUid.get(runner.horseUid) : undefined) ??
         oddsByName.get(normalizedRunner),
@@ -173,6 +191,14 @@ function buildNextRaceRunnerRows(nextRace: Race, races: Race[], bets: Bet[], use
       backers,
     }
   }).sort((a, b) => {
+    const aFinish = typeof a.finishPosition === "number" && a.finishPosition > 0 ? a.finishPosition : Number.POSITIVE_INFINITY
+    const bFinish = typeof b.finishPosition === "number" && b.finishPosition > 0 ? b.finishPosition : Number.POSITIVE_INFINITY
+    const showFinishingOrder = nextRace.status === "settled" || nextRace.lifecycle === "complete"
+
+    if (showFinishingOrder && aFinish !== bFinish) {
+      return aFinish - bFinish
+    }
+
     const aOdds = typeof a.oddsValue === "number" ? a.oddsValue : Number.POSITIVE_INFINITY
     const bOdds = typeof b.oddsValue === "number" ? b.oddsValue : Number.POSITIVE_INFINITY
 
@@ -386,6 +412,11 @@ function CurrentRaceCard({
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="truncate text-sm font-medium text-foreground">{runner.horseName}</span>
+                      {typeof runner.finishPosition === "number" && runner.finishPosition > 0 ? (
+                        <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                          {formatFinishPosition(runner.finishPosition)}
+                        </Badge>
+                      ) : null}
                       {runner.isFavourite ? <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Fav</Badge> : null}
                     </div>
                     {runner.oddsLabel ? (

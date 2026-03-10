@@ -11,6 +11,7 @@ import {
   FIRESTORE_ROOT,
 } from "../src/lib/constants.js"
 import {
+  isSportingLifeRaceStageFinal,
   parseSportingLifeRacePageHtml,
   parseSportingLifeRaceUrl,
 } from "../src/lib/sportingLife.js"
@@ -2510,7 +2511,7 @@ async function runRaceImport(runId: string): Promise<RaceImportRun> {
         const autoVoided = await autoVoidNonRunnerLegs(raceRef.id, nonRunners)
         summary.legsAutoVoided += autoVoided
 
-        if (parsedResult) {
+        if (parsedResult && isSportingLifeRaceStageFinal(sourceRace.raceStage)) {
           racesNeedingSettlement.push(raceRef.id)
         }
 
