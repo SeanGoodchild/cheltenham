@@ -105,6 +105,7 @@ bun run dev:full
 - `POST /api/races/:id/import-lock`
 - `POST /api/notifications/daily-summary`
 - `POST /api/notifications/test-race-message`
+- `POST /api/telegram/test-reply`
 - `POST /api/telegram/webhook`
 
 ## Notes
@@ -127,4 +128,5 @@ bun run dev:full
   - `TELEGRAM_WEBHOOK_SECRET`
 - If `VITE_API_BASE_URL` is currently set to `http://localhost:3001` in Vercel, remove it.
 - Note: `/api/stream` (SSE) works via function streaming, but platform duration limits can still force reconnects in some environments.
-- `/api/telegram/webhook` accepts Telegram updates and replies with a one-off Gemini response in direct messages, when explicitly mentioned in a group chat, or when a user replies to a bot message, using a concise Cheltenham tracker state summary as context.
+- `/api/telegram/test-reply` runs the same fact-constrained Gemini reply flow used by the bot, but returns the generated reply, retry/validation details, and the fact packet without sending anything to Telegram.
+- `/api/telegram/webhook` accepts Telegram updates and replies with a one-off Gemini response in direct messages, when explicitly mentioned in a group chat, or when a user replies to a bot message, using the fact-constrained tracker packet as context.

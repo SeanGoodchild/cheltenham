@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  buildGeminiRaceResultFactPacket,
+  buildGeminiRaceResultFactPacketText,
   buildGeminiRaceResultNotificationSummary,
   buildGeminiRaceResultNotificationText,
+  buildGeminiTrackerFactPacket,
+  buildGeminiTrackerFactPacketText,
   buildGeminiTrackerSummary,
   buildGeminiTrackerSummaryText,
+  shouldEnableTelegramFactSearch,
+  validateTelegramReplyAgainstFactPacket,
 } from "@/lib/geminiSummary"
 import type { Bet, Race, UserProfile } from "@/lib/types"
 
@@ -214,31 +220,96 @@ describe("gemini tracker summary", () => {
     expect(raceTwoAcca?.legs).toHaveLength(2)
   })
 
-  it("formats a hybrid text summary with a parsable tracker json block", () => {
+  it("builds a tracker fact packet with cash-risk displays and stable standings", () => {
+    const packet = buildGeminiTrackerFactPacket(
+      { users, races, bets },
+      "2026-03-10T14:30:00.000Z",
+    )
+
+    expect(packet.overview.cashStakedDisplay).toBe("£25.00")
+    expect(packet.overview.openRiskDisplay).toBe("£0.00")
+    expect(packet.standings.map((entry) => entry.displayName)).toEqual(["Howes", "Fabs"])
+    expect(packet.standings[0]).toMatchObject({
+      displayName: "Howes",
+      overallPlDisplay: "+£35.00",
+      cashStakedDisplay: "£15.00",
+    })
+    expect(packet.races.find((race) => race.raceId === "r3")?.users[0]).toMatchObject({
+      displayName: "Fabs",
+      cashStakedDisplay: "£0.00",
+      racePlDisplay: "£0.00",
+    })
+  })
+
+  it("formats tracker fact packet text with parsable packet json", () => {
+    const text = buildGeminiTrackerFactPacketText(
+      { users, races, bets },
+      "2026-03-10T14:30:00.000Z",
+    )
+
+    expect(text).toContain("TELEGRAM TRACKER FACT PACKET")
+
+    const jsonText = text.split("\n").slice(2).join("\n")
+    expect(JSON.parse(jsonText)).toMatchObject({
+      overview: {
+        cashStakedDisplay: "£25.00",
+      },
+      lastSettledRace: {
+        raceId: "r2",
+      },
+    })
+  })
+
+  it("keeps legacy tracker summary text wired to the fact packet format", () => {
     const text = buildGeminiTrackerSummaryText(
       { users, races, bets },
       "2026-03-10T14:30:00.000Z",
     )
 
-    expect(text).toContain("Cheltenham Tracker Summary")
-    expect(text).toContain("Tracker JSON:")
+    expect(text).toContain("TELEGRAM TRACKER FACT PACKET")
+  })
 
-    const jsonText = text.split("Tracker JSON:\n")[1]
-    expect(jsonText).toBeTruthy()
-    expect(JSON.parse(jsonText ?? "")).toMatchObject({
-      overview: {
-        lastSettledRace: {
-          raceId: "r2",
+  it("builds race-result fact packet with race swings separate from overall standings", () => {
+    const packet = buildGeminiRaceResultFactPacket(
+      { users, races, bets },
+      "r2",
+      "2026-03-10T14:30:00.000Z",
+    )
+
+    expect(packet.settledRace.users[0]).toMatchObject({
+      displayName: "Howes",
+      racePlDisplay: "+£25.00",
+    })
+    expect(packet.standings[0]).toMatchObject({
+      displayName: "Howes",
+      overallPlDisplay: "+£35.00",
+    })
+    expect(packet.nextRace).toMatchObject({
+      raceId: "r3",
+      openSelections: [
+        {
+          displayName: "Fabs",
+          cashStakeDisplay: "£0.00",
+          selections: ["Horse X"],
         },
-      },
-      races: {
-        r1: {
-          users: {
-            howes: {
-              betsCount: 2,
-            },
-          },
-        },
+      ],
+    })
+  })
+
+  it("formats race-result fact packet text with parsable packet json", () => {
+    const text = buildGeminiRaceResultFactPacketText(
+      { users, races, bets },
+      "r2",
+      "2026-03-10T14:30:00.000Z",
+    )
+
+    expect(text).toContain("TELEGRAM RACE RESULT FACT PACKET")
+
+    const jsonText = text.split("\n").slice(2).join("\n")
+    expect(JSON.parse(jsonText)).toMatchObject({
+      settledRace: {
+        raceId: "r2",
+        winner: "Horse D",
       },
     })
   })
@@ -261,32 +332,47 @@ describe("gemini tracker summary", () => {
       openSelections: [
         {
           userId: "fabs",
-          totalStake: 2,
+          totalStake: 0,
           selections: ["Horse X"],
         },
       ],
     })
   })
 
-  it("formats race-result text with a parsable tracker json block", () => {
+  it("keeps legacy race-result text wired to the fact packet format", () => {
     const text = buildGeminiRaceResultNotificationText(
       { users, races, bets },
       "r2",
       "2026-03-10T14:30:00.000Z",
     )
 
-    expect(text).toContain("Cheltenham Race Result Context")
-    expect(text).toContain("Tracker JSON:")
+    expect(text).toContain("TELEGRAM RACE RESULT FACT PACKET")
+  })
 
-    const jsonText = text.split("Tracker JSON:\n")[1]
-    expect(JSON.parse(jsonText ?? "")).toMatchObject({
-      race: {
-        raceId: "r2",
-        winner: "Horse D",
-      },
-      nextRace: {
-        raceId: "r3",
-      },
-    })
+  it("enables search only for explicit external info requests", () => {
+    expect(shouldEnableTelegramFactSearch("How are things going?")).toBe(false)
+    expect(shouldEnableTelegramFactSearch("Give me a tip for the next race")).toBe(true)
+    expect(shouldEnableTelegramFactSearch("Can you look up a source for that?")).toBe(true)
+  })
+
+  it("flags replies that contain figures missing from the fact packet", () => {
+    const packet = buildGeminiTrackerFactPacket(
+      { users, races, bets },
+      "2026-03-10T14:30:00.000Z",
+    )
+
+    expect(
+      validateTelegramReplyAgainstFactPacket(
+        "Howes leads on +£35.00 and the next race is Tue 15:00.",
+        packet,
+      ),
+    ).toEqual({ ok: true, invalidTokens: [] })
+
+    expect(
+      validateTelegramReplyAgainstFactPacket(
+        "Howes leads on +£36.00 and the next race is Tue 15:00.",
+        packet,
+      ),
+    ).toEqual({ ok: false, invalidTokens: ["+£36.00"] })
   })
 })

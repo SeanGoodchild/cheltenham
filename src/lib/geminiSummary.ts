@@ -1,4 +1,5 @@
 import type { Bet, Race, UserProfile } from "./types.js"
+import { APP_TIMEZONE } from "./constants.js"
 import {
   calculateBetPotentialProfit,
   calculateBetPotentialReturn,
@@ -156,6 +157,138 @@ export type GeminiRaceResultNotificationSummary = {
   } | null
 }
 
+export type GeminiTrackerFactPacket = {
+  packetType: "tracker_state"
+  generatedAt: string
+  overview: {
+    betsPlaced: number
+    cashStakedDisplay: string
+    settledCashStakedDisplay: string
+    settledReturnsDisplay: string
+    settledPlDisplay: string
+    openRiskDisplay: string
+    winPctDisplay: string
+    roasPctDisplay: string
+    openTootsCount: number
+  }
+  standings: Array<{
+    displayName: string
+    overallPlDisplay: string
+    cashStakedDisplay: string
+    settledReturnsDisplay: string
+    openRiskDisplay: string
+    winPctDisplay: string
+    betsPlaced: number
+  }>
+  leader: {
+    displayName: string
+    overallPlDisplay: string
+  } | null
+  biggestLoser: {
+    displayName: string
+    overallPlDisplay: string
+  } | null
+  lastSettledRace: {
+    raceId: string
+    name: string
+    offTimeDisplay: string
+    winner: string | null
+    placed: string[]
+    users: Array<{
+      displayName: string
+      racePlDisplay: string
+      cashStakedDisplay: string
+      settledReturnsDisplay: string
+      winningSelections: string[]
+      placedSelections: string[]
+      losingSelections: string[]
+    }>
+  } | null
+  nextRace: {
+    raceId: string
+    name: string
+    offTimeDisplay: string
+    status: Race["status"]
+    marketFavourite: string | null
+    openSelections: Array<{
+      displayName: string
+      cashStakeDisplay: string
+      selections: string[]
+    }>
+  } | null
+  races: Array<{
+    raceId: string
+    name: string
+    offTimeDisplay: string
+    status: Race["status"]
+    lifecycle: Race["lifecycle"]
+    winner: string | null
+    placed: string[]
+    marketFavourite: string | null
+    users: Array<{
+      displayName: string
+      betsCount: number
+      cashStakedDisplay: string
+      settledReturnsDisplay: string
+      racePlDisplay: string
+      winningSelections: string[]
+      placedSelections: string[]
+      losingSelections: string[]
+    }>
+  }>
+}
+
+export type GeminiRaceResultFactPacket = {
+  packetType: "race_result"
+  generatedAt: string
+  settledRace: {
+    raceId: string
+    name: string
+    day: Race["day"]
+    offTimeDisplay: string
+    winner: string | null
+    placed: string[]
+    marketFavourite: string | null
+    users: Array<{
+      displayName: string
+      racePlDisplay: string
+      cashStakedDisplay: string
+      settledReturnsDisplay: string
+      winningSelections: string[]
+      placedSelections: string[]
+      losingSelections: string[]
+    }>
+  }
+  standings: Array<{
+    displayName: string
+    overallPlDisplay: string
+    cashStakedDisplay: string
+    settledReturnsDisplay: string
+    openRiskDisplay: string
+    winPctDisplay: string
+    betsPlaced: number
+  }>
+  nextRace: {
+    raceId: string
+    name: string
+    offTimeDisplay: string
+    status: Race["status"]
+    marketFavourite: string | null
+    openSelections: Array<{
+      displayName: string
+      cashStakeDisplay: string
+      selections: string[]
+    }>
+  } | null
+}
+
+export type GeminiFactPacket = GeminiTrackerFactPacket | GeminiRaceResultFactPacket
+
+export type GeminiFactValidationResult = {
+  ok: boolean
+  invalidTokens: string[]
+}
+
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100
 }
@@ -172,6 +305,73 @@ function formatMoneyGBP(value: number): string {
 function formatCompactMoney(value: number): string {
   const sign = value > 0 ? "+" : value < 0 ? "-" : ""
   return `${sign}${formatMoneyGBP(Math.abs(value))}`
+}
+
+function formatPct(value: number): string {
+  return `${value}%`
+}
+
+function formatRaceTimeDisplay(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) {
+    return "TBC"
+  }
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: APP_TIMEZONE,
+  }).format(date)
+}
+
+function isOpenBetStatus(status: Bet["status"]): boolean {
+  return status === "open" || status === "locked"
+}
+
+function sortRaceUsers<T extends { displayName: string; racePlDisplay?: string }>(
+  values: T[],
+  extractValue?: (entry: T) => number,
+): T[] {
+  return [...values].sort((a, b) => {
+    const aValue = extractValue ? extractValue(a) : 0
+    const bValue = extractValue ? extractValue(b) : 0
+    if (aValue !== bValue) {
+      return bValue - aValue
+    }
+    return a.displayName.localeCompare(b.displayName)
+  })
+}
+
+function buildOpenSelectionsPacket(
+  users: UserProfile[],
+  openBets: Bet[],
+  race: Race | null,
+): NonNullable<GeminiTrackerFactPacket["nextRace"]>["openSelections"] {
+  if (!race) {
+    return []
+  }
+
+  return users
+    .map((user) => {
+      const userBets = openBets.filter(
+        (bet) => bet.userId === user.id && bet.legs.some((leg) => leg.raceId === race.id),
+      )
+
+      return {
+        displayName: user.displayName,
+        cashStakeDisplay: formatMoneyGBP(roundMoney(userBets.reduce((acc, bet) => acc + getBetRiskStake(bet), 0))),
+        selections: uniqueStrings(
+          userBets.flatMap((bet) =>
+            bet.legs
+              .filter((leg) => leg.raceId === race.id)
+              .map((leg) => leg.selectionName),
+          ),
+        ),
+      }
+    })
+    .filter((entry) => entry.cashStakeDisplay !== formatMoneyGBP(0) || entry.selections.length > 0)
+    .sort((a, b) => a.displayName.localeCompare(b.displayName))
 }
 
 function getNextRaceForSummary(races: Race[], now = Date.now()): Race | null {
@@ -402,32 +602,150 @@ export function buildGeminiTrackerSummary(
   }
 }
 
+export function buildGeminiTrackerFactPacket(
+  state: TrackerStateInput,
+  nowIso = new Date().toISOString(),
+): GeminiTrackerFactPacket {
+  const summary = buildGeminiTrackerSummary(state, nowIso)
+  const usersById = new Map(state.users.map((user) => [user.id, user]))
+  const betsWithDerivedStatus = state.bets.map((bet) => ({
+    ...bet,
+    status: getDerivedBetStatus(bet, nowIso),
+  }))
+  const openBets = betsWithDerivedStatus.filter((bet) => isOpenBetStatus(bet.status))
+  const lastSettledRaceId = summary.overview.lastSettledRace?.raceId ?? null
+  const lastSettledRaceSummary = lastSettledRaceId ? summary.races[lastSettledRaceId] : null
+  const nextRace =
+    summary.overview.nextRace === null
+      ? null
+      : state.races.find((race) => race.id === summary.overview.nextRace?.raceId) ?? null
+
+  const standings = summary.overview.leader || summary.overview.biggestLoser
+    ? state.users
+        .map((user) => {
+          const stats = computeUserStats(user, betsWithDerivedStatus)
+          const userOpenRisk = roundMoney(
+            openBets.filter((bet) => bet.userId === user.id).reduce((acc, bet) => acc + getBetRiskStake(bet), 0),
+          )
+          return {
+            displayName: usersById.get(stats.userId)?.displayName ?? stats.userId,
+            overallPlDisplay: formatCompactMoney(roundMoney(stats.profitLoss)),
+            cashStakedDisplay: formatMoneyGBP(roundMoney(stats.totalStaked)),
+            settledReturnsDisplay: formatMoneyGBP(roundMoney(stats.totalReturns)),
+            openRiskDisplay: formatMoneyGBP(userOpenRisk),
+            winPctDisplay: formatPct(stats.winPct),
+            betsPlaced: stats.betsPlaced,
+            _profitLoss: roundMoney(stats.profitLoss),
+          }
+        })
+        .sort((a, b) => b._profitLoss - a._profitLoss || a.displayName.localeCompare(b.displayName))
+        .map(({ _profitLoss: _unused, ...entry }) => entry)
+    : []
+
+  return {
+    packetType: "tracker_state",
+    generatedAt: nowIso,
+    overview: {
+      betsPlaced: summary.overview.betsPlaced,
+      cashStakedDisplay: formatMoneyGBP(summary.overview.totalStaked),
+      settledCashStakedDisplay: formatMoneyGBP(summary.overview.settledStakeTotal),
+      settledReturnsDisplay: formatMoneyGBP(summary.overview.totalReturns),
+      settledPlDisplay: formatCompactMoney(summary.overview.settledProfitLoss),
+      openRiskDisplay: formatMoneyGBP(roundMoney(openBets.reduce((acc, bet) => acc + getBetRiskStake(bet), 0))),
+      winPctDisplay: formatPct(summary.overview.winPct),
+      roasPctDisplay: formatPct(summary.overview.roasPct),
+      openTootsCount: summary.overview.openBetsCount,
+    },
+    standings,
+    leader: summary.overview.leader
+      ? {
+          displayName: summary.overview.leader.displayName,
+          overallPlDisplay: formatCompactMoney(summary.overview.leader.profitLoss),
+        }
+      : null,
+    biggestLoser: summary.overview.biggestLoser
+      ? {
+          displayName: summary.overview.biggestLoser.displayName,
+          overallPlDisplay: formatCompactMoney(summary.overview.biggestLoser.profitLoss),
+        }
+      : null,
+    lastSettledRace:
+      lastSettledRaceSummary === null || lastSettledRaceId === null
+        ? null
+        : {
+            raceId: lastSettledRaceId,
+            name: lastSettledRaceSummary.name,
+            offTimeDisplay: formatRaceTimeDisplay(lastSettledRaceSummary.offTime),
+            winner: lastSettledRaceSummary.winner,
+            placed: lastSettledRaceSummary.placed,
+            users: sortRaceUsers(
+              Object.values(lastSettledRaceSummary.users).map((user) => ({
+                displayName: user.displayName,
+                racePlDisplay: formatCompactMoney(user.profitLoss),
+                cashStakedDisplay: formatMoneyGBP(user.riskStake),
+                settledReturnsDisplay: formatMoneyGBP(user.settledReturn),
+                winningSelections: user.winningSelections,
+                placedSelections: user.placedSelections,
+                losingSelections: user.losingSelections,
+                _profitLoss: user.profitLoss,
+              })),
+              (entry) => entry._profitLoss,
+            ).map(({ _profitLoss: _unused, ...entry }) => entry),
+          },
+    nextRace:
+      nextRace === null
+        ? null
+        : {
+            raceId: nextRace.id,
+            name: nextRace.name,
+            offTimeDisplay: formatRaceTimeDisplay(nextRace.offTime),
+            status: nextRace.status,
+            marketFavourite: nextRace.marketFavourite?.horseName ?? null,
+            openSelections: buildOpenSelectionsPacket(state.users, openBets, nextRace),
+          },
+    races: Object.entries(summary.races).map(([raceId, race]) => ({
+      raceId,
+      name: race.name,
+      offTimeDisplay: formatRaceTimeDisplay(race.offTime),
+      status: race.status,
+      lifecycle: race.lifecycle,
+      winner: race.winner,
+      placed: race.placed,
+      marketFavourite: race.marketFavourite?.horseName ?? null,
+      users: sortRaceUsers(
+        Object.values(race.users).map((user) => ({
+          displayName: user.displayName,
+          betsCount: user.betsCount,
+          cashStakedDisplay: formatMoneyGBP(user.riskStake),
+          settledReturnsDisplay: formatMoneyGBP(user.settledReturn),
+          racePlDisplay: formatCompactMoney(user.profitLoss),
+          winningSelections: user.winningSelections,
+          placedSelections: user.placedSelections,
+          losingSelections: user.losingSelections,
+          _profitLoss: user.profitLoss,
+        })),
+        (entry) => entry._profitLoss,
+      ).map(({ _profitLoss: _unused, ...entry }) => entry),
+    })),
+  }
+}
+
+export function buildGeminiTrackerFactPacketText(
+  state: TrackerStateInput,
+  nowIso = new Date().toISOString(),
+): string {
+  return [
+    "TELEGRAM TRACKER FACT PACKET",
+    "Use only values present in this packet. Copy money, percent, and time strings verbatim.",
+    JSON.stringify(buildGeminiTrackerFactPacket(state, nowIso), null, 2),
+  ].join("\n")
+}
+
 export function buildGeminiTrackerSummaryText(
   state: TrackerStateInput,
   nowIso = new Date().toISOString(),
 ): string {
-  const summary = buildGeminiTrackerSummary(state, nowIso)
-  const { overview } = summary
-  const lines = [
-    "Cheltenham Tracker Summary",
-    `Overall: ${overview.betsPlaced} bets, ${formatMoneyGBP(overview.totalStaked)} staked, ${formatMoneyGBP(overview.totalReturns)} settled returns, settled P&L ${formatCompactMoney(overview.settledProfitLoss)}, open stake ${formatMoneyGBP(overview.openStake)}, win rate ${overview.winPct}%, ROAS ${overview.roasPct}%.`,
-    overview.leader
-      ? `Leader: ${overview.leader.displayName} ${formatCompactMoney(overview.leader.profitLoss)}.`
-      : "Leader: none.",
-    overview.biggestLoser
-      ? `Biggest loser: ${overview.biggestLoser.displayName} ${formatCompactMoney(overview.biggestLoser.profitLoss)}.`
-      : "Biggest loser: none.",
-    overview.lastSettledRace
-      ? `Last settled race: ${overview.lastSettledRace.name}. Winner: ${overview.lastSettledRace.winner ?? "unknown"}.`
-      : "Last settled race: none.",
-    overview.nextRace
-      ? `Next race: ${overview.nextRace.name} at ${overview.nextRace.offTime} (${overview.nextRace.status}). Favourite: ${overview.nextRace.marketFavourite ?? "unknown"}.`
-      : "Next race: none scheduled.",
-    "Tracker JSON:",
-    JSON.stringify(summary),
-  ]
-
-  return lines.join("\n")
+  return buildGeminiTrackerFactPacketText(state, nowIso)
 }
 
 export function buildGeminiRaceResultNotificationSummary(
@@ -478,7 +796,7 @@ export function buildGeminiRaceResultNotificationSummary(
       totalStaked: roundMoney(stat.totalStaked),
       totalReturns: roundMoney(stat.totalReturns),
       openStake: roundMoney(
-        openBets.filter((bet) => bet.userId === stat.userId).reduce((acc, bet) => acc + bet.stakeTotal, 0),
+        openBets.filter((bet) => bet.userId === stat.userId).reduce((acc, bet) => acc + getBetRiskStake(bet), 0),
       ),
       winPct: stat.winPct,
     }))
@@ -514,7 +832,7 @@ export function buildGeminiRaceResultNotificationSummary(
               return {
                 userId: user.id,
                 displayName: user.displayName,
-                totalStake: roundMoney(userBets.reduce((acc, bet) => acc + bet.stakeTotal, 0)),
+                totalStake: roundMoney(userBets.reduce((acc, bet) => acc + getBetRiskStake(bet), 0)),
                 selections: uniqueStrings(
                   userBets.flatMap((bet) =>
                     bet.legs
@@ -546,21 +864,122 @@ export function buildGeminiRaceResultNotificationSummary(
   }
 }
 
+export function buildGeminiRaceResultFactPacket(
+  state: TrackerStateInput,
+  raceId: string,
+  nowIso = new Date().toISOString(),
+): GeminiRaceResultFactPacket {
+  const summary = buildGeminiRaceResultNotificationSummary(state, raceId, nowIso)
+
+  return {
+    packetType: "race_result",
+    generatedAt: nowIso,
+    settledRace: {
+      raceId: summary.race.raceId,
+      name: summary.race.name,
+      day: summary.race.day,
+      offTimeDisplay: formatRaceTimeDisplay(summary.race.offTime),
+      winner: summary.race.winner,
+      placed: summary.race.placed,
+      marketFavourite: summary.race.marketFavourite?.horseName ?? null,
+      users: sortRaceUsers(
+        Object.values(summary.race.users).map((user) => ({
+          displayName: user.displayName,
+          racePlDisplay: formatCompactMoney(user.profitLoss),
+          cashStakedDisplay: formatMoneyGBP(user.riskStake),
+          settledReturnsDisplay: formatMoneyGBP(user.settledReturn),
+          winningSelections: user.winningSelections,
+          placedSelections: user.placedSelections,
+          losingSelections: user.losingSelections,
+          _profitLoss: user.profitLoss,
+        })),
+        (entry) => entry._profitLoss,
+      ).map(({ _profitLoss: _unused, ...entry }) => entry),
+    },
+    standings: summary.standings.map((entry) => ({
+      displayName: entry.displayName,
+      overallPlDisplay: formatCompactMoney(entry.profitLoss),
+      cashStakedDisplay: formatMoneyGBP(entry.totalStaked),
+      settledReturnsDisplay: formatMoneyGBP(entry.totalReturns),
+      openRiskDisplay: formatMoneyGBP(entry.openStake),
+      winPctDisplay: formatPct(entry.winPct),
+      betsPlaced: entry.betsPlaced,
+    })),
+    nextRace:
+      summary.nextRace === null
+        ? null
+        : {
+            raceId: summary.nextRace.raceId,
+            name: summary.nextRace.name,
+            offTimeDisplay: formatRaceTimeDisplay(summary.nextRace.offTime),
+            status: summary.nextRace.status,
+            marketFavourite: summary.nextRace.marketFavourite?.horseName ?? null,
+            openSelections: summary.nextRace.openSelections.map((entry) => ({
+              displayName: entry.displayName,
+              cashStakeDisplay: formatMoneyGBP(entry.totalStake),
+              selections: entry.selections,
+            })),
+          },
+  }
+}
+
+export function buildGeminiRaceResultFactPacketText(
+  state: TrackerStateInput,
+  raceId: string,
+  nowIso = new Date().toISOString(),
+): string {
+  return [
+    "TELEGRAM RACE RESULT FACT PACKET",
+    "Use only values present in this packet. Copy money, percent, and time strings verbatim.",
+    JSON.stringify(buildGeminiRaceResultFactPacket(state, raceId, nowIso), null, 2),
+  ].join("\n")
+}
+
 export function buildGeminiRaceResultNotificationText(
   state: TrackerStateInput,
   raceId: string,
   nowIso = new Date().toISOString(),
 ): string {
-  const summary = buildGeminiRaceResultNotificationSummary(state, raceId, nowIso)
-  const lines = [
-    "Cheltenham Race Result Context",
-    `Settled race: ${summary.race.name}. Winner: ${summary.race.winner ?? "unknown"}.`,
-    summary.nextRace
-      ? `Next race: ${summary.nextRace.name} at ${summary.nextRace.offTime}.`
-      : "Next race: none scheduled.",
-    "Tracker JSON:",
-    JSON.stringify(summary),
-  ]
+  return buildGeminiRaceResultFactPacketText(state, raceId, nowIso)
+}
 
-  return lines.join("\n")
+const EXTERNAL_INFO_QUERY_REGEX =
+  /\b(tip|tips|source|sources|link|links|look up|lookup|search|web|website|racing post|oddschecker|price|prices|market move|market moves|latest news|latest odds)\b/i
+
+export function shouldEnableTelegramFactSearch(prompt: string): boolean {
+  return EXTERNAL_INFO_QUERY_REGEX.test(prompt)
+}
+
+const FACT_TOKEN_REGEX =
+  /[+-]?£\d[\d,]*\.\d{2}|[+-]?\d+(?:\.\d+)?%|\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s\d{2}:\d{2}\b|\b\d{2}:\d{2}\b/g
+
+function collectFactDisplayTokens(value: unknown, allowed = new Set<string>()): Set<string> {
+  if (typeof value === "string") {
+    const matches = value.match(FACT_TOKEN_REGEX) ?? []
+    matches.forEach((match) => allowed.add(match))
+    return allowed
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectFactDisplayTokens(entry, allowed))
+    return allowed
+  }
+
+  if (value && typeof value === "object") {
+    Object.values(value).forEach((entry) => collectFactDisplayTokens(entry, allowed))
+  }
+
+  return allowed
+}
+
+export function validateTelegramReplyAgainstFactPacket(
+  reply: string,
+  packet: GeminiFactPacket,
+): GeminiFactValidationResult {
+  const allowedTokens = collectFactDisplayTokens(packet)
+  const invalidTokens = uniqueStrings((reply.match(FACT_TOKEN_REGEX) ?? []).filter((token) => !allowedTokens.has(token)))
+  return {
+    ok: invalidTokens.length === 0,
+    invalidTokens,
+  }
 }

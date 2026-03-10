@@ -16,9 +16,13 @@ import {
   parseSportingLifeRaceUrl,
 } from "../src/lib/sportingLife.js"
 import {
+  buildGeminiRaceResultFactPacket,
+  buildGeminiRaceResultFactPacketText,
   buildGeminiRaceResultNotificationSummary,
-  buildGeminiRaceResultNotificationText,
-  buildGeminiTrackerSummaryText,
+  buildGeminiTrackerFactPacket,
+  buildGeminiTrackerFactPacketText,
+  shouldEnableTelegramFactSearch,
+  validateTelegramReplyAgainstFactPacket,
 } from "../src/lib/geminiSummary.js"
 import type {
   Bet,
@@ -53,9 +57,12 @@ const GEMINI_RATE_LIMIT_WINDOW_MS = 60_000
 const TELEGRAM_DEFAULT_SUMMARY_PROMPT = "How are things going in the Cheltenham tracker right now?"
 const GEMINI_SYSTEM_INSTRUCTION = `You are a friendly bot for a Telegram group following Cheltenham horse racing and tracking their betting results.
 
-You may be given a tracker summary with current app state such as bets, toots, standings, P&L, open stakes, and upcoming races. Use that information when it is relevant to the user's question, but do not force every reply to mention the next race or other tracker details if they are not helpful.
+You may be given a fact packet with current tracker state such as standings, P&L, open risk, settled race results, and upcoming race selections. Use that information when it is relevant to the user's question, but do not force every reply to mention the next race or other tracker details if they are not helpful.
 If a user asks something broad like "How are things going?", interpret it as a question about the current Cheltenham tracker state.
-Prefer concrete names and numbers from the provided context when useful.
+Only use figures that appear in the fact packet. Do not derive or recompute totals yourself.
+Copy money, percent, odds, and time strings verbatim from the fact packet when you mention them.
+If a figure is not present in the fact packet, say it is not tracked or not available.
+Do not merge race-specific results with overall standings unless both are explicitly present in the fact packet.
 Keep replies concise, natural, and conversational for a Telegram group, usually 1 to 4 short sentences.
 It is fine to refer to bets as "toots" occasionally, but do not overdo the slang or repeat "Lads" unnaturally.
 If the context does not contain the answer, say so briefly and do not invent details.
@@ -69,9 +76,12 @@ If asked for tips, you can search https://www.racingpost.com/horse-racing-tips/ 
 
 const GEMINI_RACE_RESULT_SYSTEM_INSTRUCTION = `You are writing a short Telegram post for the Cash Lads group immediately after a Cheltenham race has been settled.
 
-You will be given structured tracker context focused on the just-settled race, current standings, and the next race.
-Summarise what happened in the last race, who won or lost money on it, the running overall picture, and the details of the next race when useful.
-Prefer concrete names and numbers from the provided context.
+You will be given a fact packet focused on the just-settled race, the current standings, and the next race.
+Summarise what happened in the settled race, who won or lost money on it, the running overall picture, and the details of the next race when useful.
+Only use figures that appear in the fact packet. Do not derive or recompute totals yourself.
+Copy money, percent, odds, and time strings verbatim from the fact packet when you mention them.
+If a figure is not present in the fact packet, say it is not tracked or not available.
+Do not merge race-specific results with overall standings unless both are explicitly present in the fact packet.
 Keep it punchy and readable for a group chat, usually 2 to 4 short sentences.
 Do not invent details that are missing from the context.
 Do not mention JSON or say "based on the context".
@@ -114,6 +124,14 @@ type ManualBetEditInput = BetDraftInput & {
 
 type TestRaceMessageInput = {
   raceId?: string
+}
+
+type TestTelegramReplyInput = {
+  prompt?: string
+  senderName?: string
+  username?: string
+  replyToText?: string
+  replyToSender?: string
 }
 
 type TelegramSendMessageInput = {
@@ -186,6 +204,21 @@ type GenerateGeminiReplyOptions = {
   temperature?: number
   maxOutputTokens?: number
 }
+
+type FactConstrainedGeminiReplyResult =
+  | {
+      status: "ok"
+      reply: string
+      didRetry: boolean
+      firstInvalidTokens: string[]
+    }
+  | {
+      status: "unverified"
+      firstReply: string
+      retryReply: string
+      firstInvalidTokens: string[]
+      finalInvalidTokens: string[]
+    }
 
 const geminiRequestTimestamps: number[] = []
 let telegramBotUsernamePromise: Promise<string> | null = null
@@ -546,14 +579,36 @@ function buildTelegramSenderContext(message: NonNullable<TelegramWebhookUpdate["
   return `Sender: ${senderName || `@${username}`}`
 }
 
-async function buildTrackerSummaryText(): Promise<string> {
-  const state = currentState ?? (await loadState())
-  return buildGeminiTrackerSummaryText(state, nowIso())
-}
-
 async function loadTrackerStateSnapshot(): Promise<Pick<TrackerState, "users" | "races" | "bets">> {
   const [users, races, bets] = await Promise.all([getUsers(), getRaces(), getBets()])
   return { users, races, bets }
+}
+
+function buildUnverifiedFigureReply(): string {
+  return "I can't verify that figure from the tracker data."
+}
+
+function buildSyntheticTelegramSenderContext(input: TestTelegramReplyInput): string | null {
+  const senderName = input.senderName?.trim()
+  const username = input.username?.trim()
+  if (!senderName && !username) {
+    return null
+  }
+  if (senderName && username) {
+    return `Sender: ${senderName} (@${username})`
+  }
+  return `Sender: ${senderName || `@${username}`}`
+}
+
+function buildSyntheticTelegramConversationContext(input: TestTelegramReplyInput): string | null {
+  const replyText = input.replyToText?.trim()
+  if (!replyText) {
+    return null
+  }
+
+  const replySender = input.replyToSender?.trim() || "previous sender"
+  return `Reply context:
+The user is replying to a previous Telegram message from ${replySender}: "${replyText}"`
 }
 
 async function generateGeminiReply(
@@ -634,6 +689,61 @@ ${prompt}`,
   return trimTelegramReply(reply)
 }
 
+async function runFactConstrainedGeminiReply(
+  prompt: string,
+  trackerSummary: string,
+  factPacket: ReturnType<typeof buildGeminiTrackerFactPacket> | ReturnType<typeof buildGeminiRaceResultFactPacket>,
+  senderContext?: string | null,
+  conversationContext?: string | null,
+  options?: GenerateGeminiReplyOptions,
+): Promise<FactConstrainedGeminiReplyResult> {
+  const firstReply = await generateGeminiReply(prompt, trackerSummary, senderContext, conversationContext, options)
+  const firstValidation = validateTelegramReplyAgainstFactPacket(firstReply, factPacket)
+  if (firstValidation.ok) {
+    return {
+      status: "ok",
+      reply: firstReply,
+      didRetry: false,
+      firstInvalidTokens: [],
+    }
+  }
+
+  const retryPrompt = `${prompt}
+
+Correction: your previous reply used figures that are not in the fact packet: ${firstValidation.invalidTokens.join(", ")}.
+Rewrite the answer using only exact money, percent, odds, and time strings from the fact packet.
+If a figure is not present, say it is not tracked or not available.`
+
+  const retryReply = await generateGeminiReply(
+    retryPrompt,
+    trackerSummary,
+    senderContext,
+    conversationContext,
+    {
+      ...options,
+      temperature: Math.min(options?.temperature ?? 0.4, 0.2),
+    },
+  )
+
+  const retryValidation = validateTelegramReplyAgainstFactPacket(retryReply, factPacket)
+  if (!retryValidation.ok) {
+    return {
+      status: "unverified",
+      firstReply,
+      retryReply,
+      firstInvalidTokens: firstValidation.invalidTokens,
+      finalInvalidTokens: retryValidation.invalidTokens,
+    }
+  }
+
+  return {
+    status: "ok",
+    reply: retryReply,
+    didRetry: true,
+    firstInvalidTokens: firstValidation.invalidTokens,
+  }
+}
+
 function buildRaceResultFallbackMessage(
   summary: ReturnType<typeof buildGeminiRaceResultNotificationSummary>,
   options?: { isTest?: boolean },
@@ -669,24 +779,29 @@ async function generateRaceResultTelegramMessage(
 ): Promise<{ message: string; summary: ReturnType<typeof buildGeminiRaceResultNotificationSummary> }> {
   const state = await loadTrackerStateSnapshot()
   const summary = buildGeminiRaceResultNotificationSummary(state, raceId, nowIso())
-  const trackerSummary = buildGeminiRaceResultNotificationText(state, raceId, nowIso())
+  const factPacket = buildGeminiRaceResultFactPacket(state, raceId, nowIso())
+  const trackerSummary = buildGeminiRaceResultFactPacketText(state, raceId, nowIso())
 
   try {
-    const message = await generateGeminiReply(
+    const result = await runFactConstrainedGeminiReply(
       options?.isTest ? "Write a test-mode post-race Telegram update for this settled race." : "Write the post-race Telegram update for the group.",
       trackerSummary,
+      factPacket,
       null,
       null,
       {
         systemInstruction: GEMINI_RACE_RESULT_SYSTEM_INSTRUCTION,
         enableSearch: false,
-        temperature: 0.5,
+        temperature: 0.2,
         maxOutputTokens: 180,
       },
     )
+    if (result.status !== "ok") {
+      throw new Error(`Gemini reply contained unverified figures: ${result.finalInvalidTokens.join(", ")}`)
+    }
 
     return {
-      message: options?.isTest ? `[TEST] ${message}` : message,
+      message: options?.isTest ? `[TEST] ${result.reply}` : result.reply,
       summary,
     }
   } catch (error) {
@@ -737,11 +852,25 @@ async function handleTelegramWebhook(request: Request): Promise<Response> {
 
   let replyText = ""
   try {
-    const trackerSummary = await buildTrackerSummaryText()
+    const state = await loadTrackerStateSnapshot()
+    const factPacket = buildGeminiTrackerFactPacket(state, nowIso())
+    const trackerSummary = buildGeminiTrackerFactPacketText(state, nowIso())
     const promptInput = buildTelegramPromptInput(message, botUsername)
     const senderContext = buildTelegramSenderContext(message)
     const conversationContext = buildTelegramConversationContext(message)
-    replyText = await generateGeminiReply(promptInput, trackerSummary, senderContext, conversationContext)
+    const result = await runFactConstrainedGeminiReply(
+      promptInput,
+      trackerSummary,
+      factPacket,
+      senderContext,
+      conversationContext,
+      {
+        enableSearch: shouldEnableTelegramFactSearch(promptInput),
+        temperature: 0.3,
+        maxOutputTokens: 220,
+      },
+    )
+    replyText = result.status === "ok" ? result.reply : buildUnverifiedFigureReply()
   } catch (error) {
     console.error("telegram webhook gemini reply failed", error)
     replyText =
@@ -922,6 +1051,68 @@ async function sendTestRaceResultTelegram(input: TestRaceMessageInput): Promise<
     raceName: selectedRace.name,
     status,
     error,
+  }
+}
+
+async function runTestTelegramReply(input: TestTelegramReplyInput): Promise<{
+  prompt: string
+  reply: string
+  status: "ok" | "unverified"
+  didRetry: boolean
+  firstInvalidTokens: string[]
+  finalInvalidTokens: string[]
+  searchEnabled: boolean
+  senderContext: string | null
+  conversationContext: string | null
+  factPacket: ReturnType<typeof buildGeminiTrackerFactPacket>
+}> {
+  const state = await loadTrackerStateSnapshot()
+  const generatedAt = nowIso()
+  const prompt = input.prompt?.trim() || TELEGRAM_DEFAULT_SUMMARY_PROMPT
+  const senderContext = buildSyntheticTelegramSenderContext(input)
+  const conversationContext = buildSyntheticTelegramConversationContext(input)
+  const factPacket = buildGeminiTrackerFactPacket(state, generatedAt)
+  const trackerSummary = buildGeminiTrackerFactPacketText(state, generatedAt)
+  const searchEnabled = shouldEnableTelegramFactSearch(prompt)
+  const result = await runFactConstrainedGeminiReply(
+    prompt,
+    trackerSummary,
+    factPacket,
+    senderContext,
+    conversationContext,
+    {
+      enableSearch: searchEnabled,
+      temperature: 0.3,
+      maxOutputTokens: 220,
+    },
+  )
+
+  if (result.status === "ok") {
+    return {
+      prompt,
+      reply: result.reply,
+      status: "ok",
+      didRetry: result.didRetry,
+      firstInvalidTokens: result.firstInvalidTokens,
+      finalInvalidTokens: [],
+      searchEnabled,
+      senderContext,
+      conversationContext,
+      factPacket,
+    }
+  }
+
+  return {
+    prompt,
+    reply: buildUnverifiedFigureReply(),
+    status: "unverified",
+    didRetry: true,
+    firstInvalidTokens: result.firstInvalidTokens,
+    finalInvalidTokens: result.finalInvalidTokens,
+    searchEnabled,
+    senderContext,
+    conversationContext,
+    factPacket,
   }
 }
 
@@ -2894,6 +3085,12 @@ export async function handleApiRequest(request: Request): Promise<Response> {
       const input = (await request.json().catch(() => ({}))) as TestRaceMessageInput
       const result = await sendTestRaceResultTelegram(input)
       return jsonResponse({ ok: result.status === "sent", result }, result.status === "sent" ? 200 : 502)
+    }
+
+    if (request.method === "POST" && pathname === "/api/telegram/test-reply") {
+      const input = await parseJson<TestTelegramReplyInput>(request)
+      const result = await runTestTelegramReply(input)
+      return jsonResponse({ ok: result.status === "ok", result })
     }
 
     if (request.method === "POST" && pathname === "/api/telegram/webhook") {

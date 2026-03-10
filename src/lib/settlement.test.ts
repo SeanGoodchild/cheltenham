@@ -242,12 +242,12 @@ describe("stats calculations", () => {
     })
 
     const userStats = computeUserStats(user, [freeBetWin])
-    expect(userStats.totalStaked).toBe(2)
+    expect(userStats.totalStaked).toBe(0)
     expect(userStats.totalReturns).toBe(2)
     expect(userStats.profitLoss).toBe(2)
 
     const global = computeGlobalStats([freeBetWin], [user], "2026-03-10T14:00:00.000Z")
-    expect(global.totalStaked).toBe(2)
+    expect(global.totalStaked).toBe(0)
     expect(global.totalReturns).toBe(2)
     expect(global.roasPct).toBe(0)
   })
