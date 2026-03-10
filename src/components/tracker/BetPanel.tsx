@@ -257,6 +257,49 @@ export function BetPanel({
     return grouped
   }, [racesSorted])
   const raceMap = useMemo(() => new Map(racesSorted.map((race) => [race.id, race])), [racesSorted])
+  const retroactiveLegs = useMemo(() => {
+    if (draft.betType === "other") {
+      return []
+    }
+
+    const now = Date.now()
+    return draft.legs
+      .map((leg, index) => {
+        const race = raceMap.get(leg.raceId)
+        if (!race || new Date(race.offTime).getTime() > now) {
+          return null
+        }
+
+        return {
+          index,
+          race,
+          isComplete: race.lifecycle === "complete",
+        }
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+  }, [draft.betType, draft.legs, raceMap])
+  const retroactiveWarning = useMemo(() => {
+    if (retroactiveLegs.length === 0) {
+      return null
+    }
+
+    if (retroactiveLegs.length === 1) {
+      return retroactiveLegs[0].isComplete
+        ? "This race has already finished. Saving will create a retroactive toot and auto-resolve it from the recorded result."
+        : "This race has already started. Saving will create a retroactive toot."
+    }
+
+    const completedCount = retroactiveLegs.filter((entry) => entry.isComplete).length
+    if (completedCount === retroactiveLegs.length) {
+      return "Some selected races have already finished. Saving will create a retroactive toot and auto-resolve any completed legs from the recorded results."
+    }
+
+    if (completedCount > 0) {
+      return "Some selected races have already started or finished. Saving will create a retroactive toot, and any completed legs will auto-resolve from the recorded results."
+    }
+
+    return "Some selected races have already started. Saving will create a retroactive toot."
+  }, [retroactiveLegs])
   const autoAccumulatorOdds = useMemo(() => computeAccumulatorDraftOdds(draft.legs), [draft.legs])
   const visibleOpenBets = useMemo(
     () => (showAllOpenBets ? currentOpenBets : currentOpenBets.slice(0, 8)),
@@ -689,7 +732,12 @@ export function BetPanel({
                     {race?.lifecycle === "complete" ? (
                       <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
                         <AlertCircle className="size-3.5 shrink-0" />
-                        This race is complete. Bets placed here will auto-resolve immediately.
+                        This race has already finished. Saving will create a retroactive toot and auto-resolve it immediately.
+                      </div>
+                    ) : race && new Date(race.offTime).getTime() <= Date.now() ? (
+                      <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                        <AlertCircle className="size-3.5 shrink-0" />
+                        This race has already started. You can still save it as a retroactive toot.
                       </div>
                     ) : null}
 
@@ -969,6 +1017,13 @@ export function BetPanel({
                     {formatCurrency(potentialWinDisplay.loss)}
                   </span>
                 </div>
+              </div>
+            ) : null}
+
+            {retroactiveWarning ? (
+              <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                <AlertCircle className="size-4 shrink-0" />
+                {retroactiveWarning}
               </div>
             ) : null}
 

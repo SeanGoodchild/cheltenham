@@ -1564,7 +1564,7 @@ function buildBetPayload(
   input: BetDraftInput,
   races: Race[],
   existingId?: string,
-  options?: { allowLockedEdit?: boolean },
+  _options?: { allowLockedEdit?: boolean },
 ): Bet {
   const now = nowIso()
   const normalizedBetName = input.betName?.trim()
@@ -1684,10 +1684,6 @@ function buildBetPayload(
   }
 
   const lockAt = deriveLockAt(formattedLegs, races)
-  const allLegsComplete = legLifecycles.every((entry) => entry === "complete")
-  if (!options?.allowLockedEdit && new Date(now).getTime() > new Date(lockAt).getTime() && !allLegsComplete) {
-    throw new Error("Race is already locked")
-  }
 
   const baseBet: Bet = {
     id: existingId ?? "",
