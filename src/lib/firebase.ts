@@ -19,6 +19,11 @@ export type BetDraftInput = {
   }
 }
 
+export type ManualBetEditInput = BetDraftInput & {
+  status: Bet["status"]
+  totalReturn?: number | null
+}
+
 export type RaceImportRefreshResponse = {
   ok: true
   run: RaceImportRun
@@ -268,6 +273,24 @@ export async function resolveOtherBetManually(input: { betId: string; totalRetur
   await request<{ ok: true }>(`/api/bets/${input.betId}/manual-settle`, {
     method: "POST",
     body: JSON.stringify({ totalReturn: input.totalReturn }),
+  })
+}
+
+export async function manuallyEditBet(input: ManualBetEditInput & { betId: string }): Promise<void> {
+  await request<{ ok: true }>(`/api/bets/${input.betId}/manual-edit`, {
+    method: "POST",
+    body: JSON.stringify({
+      userId: input.userId,
+      betType: input.betType,
+      betName: input.betName,
+      legs: input.legs,
+      oddsUsed: input.oddsUsed,
+      stakeTotal: input.stakeTotal,
+      isFreeBet: input.isFreeBet,
+      ewTerms: input.ewTerms,
+      status: input.status,
+      totalReturn: input.totalReturn ?? null,
+    }),
   })
 }
 

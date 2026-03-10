@@ -1,10 +1,11 @@
 import { useState } from "react"
-import { ChevronRight } from "lucide-react"
+import { ChevronRight, Pencil } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import type { ManualBetEditInput } from "@/lib/firebase"
 import { formatCurrency, formatOdds } from "@/lib/format"
 import { calculateBetPotentialProfit, resolveBetOddsUsed } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
@@ -15,11 +16,52 @@ type PersonalPanelProps = {
   user: UserProfile | undefined
   bets: Bet[]
   races: Race[]
+  onManualEditBet: (input: ManualBetEditInput & { betId: string }) => Promise<void>
   onResolveOtherBet: (input: { betId: string; totalReturn: number }) => Promise<void>
+}
+
+type EditBetDraft = {
+  betId: string
+  betType: Bet["betType"]
+  betName: string
+  legs: Array<{
+    raceId: string
+    selectionName: string
+    decimalOdds: string
+    horseUid?: number
+  }>
+  oddsUsed: string
+  stakeTotal: string
+  isFreeBet: boolean
+  placesPaid: string
+  placeFraction: string
+  status: Bet["status"]
+  totalReturn: string
 }
 
 function findRaceName(raceId: string, races: Race[]): string {
   return races.find((race) => race.id === raceId)?.name ?? "Unknown race"
+}
+
+function createEditDraft(bet: Bet): EditBetDraft {
+  return {
+    betId: bet.id,
+    betType: bet.betType,
+    betName: bet.betName ?? "",
+    legs: bet.legs.map((leg) => ({
+      raceId: leg.raceId,
+      selectionName: leg.selectionName,
+      decimalOdds: String(leg.decimalOdds ?? ""),
+      horseUid: leg.horseUid,
+    })),
+    oddsUsed: bet.oddsUsed ? String(bet.oddsUsed) : "",
+    stakeTotal: String(bet.stakeTotal),
+    isFreeBet: Boolean(bet.isFreeBet),
+    placesPaid: String(bet.ewTerms?.placesPaid ?? 3),
+    placeFraction: String(bet.ewTerms?.placeFraction ?? 0.2),
+    status: bet.status,
+    totalReturn: typeof bet.totalReturn === "number" ? String(bet.totalReturn) : "",
+  }
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -37,10 +79,13 @@ export function PersonalPanel({
   user,
   bets,
   races,
+  onManualEditBet,
   onResolveOtherBet,
 }: PersonalPanelProps) {
   const [manualReturnByBetId, setManualReturnByBetId] = useState<Record<string, string>>({})
   const [resolvingBetId, setResolvingBetId] = useState<string | null>(null)
+  const [editDraft, setEditDraft] = useState<EditBetDraft | null>(null)
+  const [savingEdit, setSavingEdit] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
 
   if (!user) {
@@ -79,6 +124,92 @@ export function PersonalPanel({
       setActionError(error instanceof Error ? error.message : "Failed to settle")
     } finally {
       setResolvingBetId(null)
+    }
+  }
+
+  const openEditModal = (bet: Bet) => {
+    setActionError(null)
+    setEditDraft(createEditDraft(bet))
+  }
+
+  const closeEditModal = () => {
+    if (savingEdit) {
+      return
+    }
+    setEditDraft(null)
+  }
+
+  const handleSaveEdit = async () => {
+    if (!user || !editDraft) {
+      return
+    }
+
+    const stakeTotal = Number(editDraft.stakeTotal)
+    const oddsUsed = editDraft.oddsUsed.trim() === "" ? null : Number(editDraft.oddsUsed)
+    const totalReturn = editDraft.totalReturn.trim() === "" ? null : Number(editDraft.totalReturn)
+    const legs = editDraft.legs.map((leg) => ({
+      raceId: leg.raceId,
+      selectionName: leg.selectionName.trim(),
+      decimalOdds: Number(leg.decimalOdds),
+      horseUid: leg.horseUid,
+    }))
+
+    if (!Number.isFinite(stakeTotal) || stakeTotal <= 0) {
+      setActionError("Stake must be greater than zero.")
+      return
+    }
+    if (legs.some((leg) => !leg.selectionName || !Number.isFinite(leg.decimalOdds) || leg.decimalOdds < 1)) {
+      setActionError("Every leg needs a selection and decimal odds of at least 1.0.")
+      return
+    }
+    if (oddsUsed !== null && (!Number.isFinite(oddsUsed) || oddsUsed < 1)) {
+      setActionError("Final odds must be blank or at least 1.0.")
+      return
+    }
+    if (totalReturn !== null && (!Number.isFinite(totalReturn) || totalReturn < 0)) {
+      setActionError("Return must be blank or a valid number greater than or equal to zero.")
+      return
+    }
+    if (
+      editDraft.betType === "each_way" &&
+      (
+        !Number.isFinite(Number(editDraft.placesPaid)) ||
+        Number(editDraft.placesPaid) < 1 ||
+        !Number.isFinite(Number(editDraft.placeFraction)) ||
+        Number(editDraft.placeFraction) <= 0
+      )
+    ) {
+      setActionError("Each-way terms need valid places paid and place fraction values.")
+      return
+    }
+
+    setActionError(null)
+    setSavingEdit(true)
+    try {
+      await onManualEditBet({
+        betId: editDraft.betId,
+        userId: user.id,
+        betType: editDraft.betType,
+        betName: editDraft.betName.trim() || undefined,
+        legs,
+        oddsUsed,
+        stakeTotal,
+        isFreeBet: editDraft.isFreeBet,
+        ewTerms:
+          editDraft.betType === "each_way"
+            ? {
+                placesPaid: Number(editDraft.placesPaid),
+                placeFraction: Number(editDraft.placeFraction),
+              }
+            : undefined,
+        status: editDraft.status,
+        totalReturn,
+      })
+      setEditDraft(null)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Failed to save bet changes")
+    } finally {
+      setSavingEdit(false)
     }
   }
 
@@ -143,6 +274,7 @@ export function PersonalPanel({
                   <div className="flex items-center gap-2">
                     <span className="truncate text-sm font-semibold">{betSelectionLabel}</span>
                     <StatusBadge status={bet.status} />
+                    {bet.manualOverride?.lockedByUser ? <Badge variant="outline" className="text-[10px]">Manual</Badge> : null}
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">{betRaceLabel}</div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs text-muted-foreground">
@@ -154,19 +286,30 @@ export function PersonalPanel({
                     <span className="font-medium text-foreground">{formatCurrency(potentialWin)}</span>
                   </div>
                 </div>
-                {profitLossValue !== null ? (
-                  <div className="text-right">
-                    <div className={cn(
-                      "text-sm font-bold tabular-nums",
-                      profitLossValue < 0 ? "text-destructive" : "text-primary",
-                    )}>
-                      {formatCurrency(profitLossValue)}
+                <div className="flex items-start gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon-sm"
+                    aria-label={`Edit ${betSelectionLabel}`}
+                    onClick={() => openEditModal(bet)}
+                  >
+                    <Pencil className="size-3.5" />
+                  </Button>
+                  {profitLossValue !== null ? (
+                    <div className="text-right">
+                      <div className={cn(
+                        "text-sm font-bold tabular-nums",
+                        profitLossValue < 0 ? "text-destructive" : "text-primary",
+                      )}>
+                        {formatCurrency(profitLossValue)}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        Return {formatCurrency(bet.totalReturn ?? 0)}
+                      </div>
                     </div>
-                    <div className="text-[10px] text-muted-foreground">
-                      Return {formatCurrency(bet.totalReturn ?? 0)}
-                    </div>
-                  </div>
-                ) : null}
+                  ) : null}
+                </div>
               </div>
               {canManuallyResolveOther ? (
                 <div className="mt-3 flex items-center gap-2 border-t border-border/40 pt-3">
@@ -255,39 +398,53 @@ export function PersonalPanel({
                       )}>
                         {profitLossLabel}
                       </td>
-                      <td><StatusBadge status={bet.status} /></td>
                       <td>
-                        {canManuallyResolveOther ? (
-                          <div className="flex items-center gap-2">
-                            <Input
-                              aria-label={`Return for ${betSelectionLabel}`}
-                              className="h-8 w-24"
-                              type="number"
-                              min={0}
-                              step={0.01}
-                              placeholder="Return"
-                              value={manualDraftValue}
-                              onChange={(event) =>
-                                setManualReturnByBetId((prev) => ({
-                                  ...prev,
-                                  [bet.id]: event.target.value,
-                                }))
-                              }
-                            />
-                            <Button
-                              type="button"
-                              size="sm"
-                              disabled={resolvingBetId === bet.id}
-                              onClick={() => {
-                                void handleManualResolve(bet)
-                              }}
-                            >
-                              {resolvingBetId === bet.id ? "..." : "Settle"}
-                            </Button>
-                          </div>
-                        ) : (
-                          <span className="text-muted-foreground">-</span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          <StatusBadge status={bet.status} />
+                          {bet.manualOverride?.lockedByUser ? <Badge variant="outline" className="text-[10px]">Manual</Badge> : null}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="flex flex-col gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openEditModal(bet)}
+                          >
+                            <Pencil className="size-3.5" />
+                            Edit
+                          </Button>
+                          {canManuallyResolveOther ? (
+                            <div className="flex items-center gap-2">
+                              <Input
+                                aria-label={`Return for ${betSelectionLabel}`}
+                                className="h-8 w-24"
+                                type="number"
+                                min={0}
+                                step={0.01}
+                                placeholder="Return"
+                                value={manualDraftValue}
+                                onChange={(event) =>
+                                  setManualReturnByBetId((prev) => ({
+                                    ...prev,
+                                    [bet.id]: event.target.value,
+                                  }))
+                                }
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                disabled={resolvingBetId === bet.id}
+                                onClick={() => {
+                                  void handleManualResolve(bet)
+                                }}
+                              >
+                                {resolvingBetId === bet.id ? "..." : "Settle"}
+                              </Button>
+                            </div>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -297,6 +454,181 @@ export function PersonalPanel({
           </div>
         </CardContent>
       </Card>
+
+      {editDraft ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/10 p-4 backdrop-blur-xs"
+          onClick={closeEditModal}
+        >
+          <div
+            className="max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-xl bg-background p-6 ring-1 ring-foreground/10"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-6">
+              <h3 className="text-lg font-medium">Edit Toot</h3>
+            </div>
+
+            <div className="grid gap-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="grid gap-1.5 text-sm">
+                  <span className="font-medium">Stake</span>
+                  <Input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={editDraft.stakeTotal}
+                    onChange={(event) =>
+                      setEditDraft((prev) => prev ? { ...prev, stakeTotal: event.target.value } : prev)
+                    }
+                  />
+                </label>
+                <label className="grid gap-1.5 text-sm">
+                  <span className="font-medium">Final Odds</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    step={0.01}
+                    value={editDraft.oddsUsed}
+                    onChange={(event) =>
+                      setEditDraft((prev) => prev ? { ...prev, oddsUsed: event.target.value } : prev)
+                    }
+                  />
+                </label>
+                <label className="grid gap-1.5 text-sm">
+                  <span className="font-medium">Status</span>
+                  <select
+                    className="h-10 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm"
+                    value={editDraft.status}
+                    onChange={(event) =>
+                      setEditDraft((prev) => prev ? { ...prev, status: event.target.value as Bet["status"] } : prev)
+                    }
+                  >
+                    <option value="open">Open</option>
+                    <option value="locked">Locked</option>
+                    <option value="settled">Settled</option>
+                    <option value="void">Void</option>
+                  </select>
+                </label>
+                <label className="grid gap-1.5 text-sm">
+                  <span className="font-medium">Return</span>
+                  <Input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={editDraft.totalReturn}
+                    onChange={(event) =>
+                      setEditDraft((prev) => prev ? { ...prev, totalReturn: event.target.value } : prev)
+                    }
+                  />
+                </label>
+              </div>
+
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  checked={editDraft.isFreeBet}
+                  onChange={(event) =>
+                    setEditDraft((prev) => prev ? { ...prev, isFreeBet: event.target.checked } : prev)
+                  }
+                />
+                Free bet
+              </label>
+
+              {editDraft.betType === "other" ? (
+                <label className="grid gap-1.5 text-sm">
+                  <span className="font-medium">Bet Name</span>
+                  <Input
+                    value={editDraft.betName}
+                    onChange={(event) =>
+                      setEditDraft((prev) => prev ? { ...prev, betName: event.target.value } : prev)
+                    }
+                  />
+                </label>
+              ) : (
+                <div className="grid gap-3">
+                  {editDraft.legs.map((leg, index) => (
+                    <div key={`${leg.raceId}-${index}`} className="grid gap-3 rounded-xl border border-border/50 p-3 md:grid-cols-[minmax(0,1fr)_140px]">
+                      <label className="grid gap-1.5 text-sm">
+                        <span className="font-medium">{findRaceName(leg.raceId, races)}</span>
+                        <Input
+                          value={leg.selectionName}
+                          onChange={(event) =>
+                            setEditDraft((prev) => prev
+                              ? {
+                                  ...prev,
+                                  legs: prev.legs.map((entry, entryIndex) =>
+                                    entryIndex === index ? { ...entry, selectionName: event.target.value } : entry),
+                                }
+                              : prev)
+                          }
+                        />
+                      </label>
+                      <label className="grid gap-1.5 text-sm">
+                        <span className="font-medium">Leg Odds</span>
+                        <Input
+                          type="number"
+                          min={1}
+                          step={0.01}
+                          value={leg.decimalOdds}
+                          onChange={(event) =>
+                            setEditDraft((prev) => prev
+                              ? {
+                                  ...prev,
+                                  legs: prev.legs.map((entry, entryIndex) =>
+                                    entryIndex === index ? { ...entry, decimalOdds: event.target.value } : entry),
+                                }
+                              : prev)
+                          }
+                        />
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {editDraft.betType === "each_way" ? (
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="grid gap-1.5 text-sm">
+                    <span className="font-medium">Places Paid</span>
+                    <Input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={editDraft.placesPaid}
+                      onChange={(event) =>
+                        setEditDraft((prev) => prev ? { ...prev, placesPaid: event.target.value } : prev)
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1.5 text-sm">
+                    <span className="font-medium">Place Fraction</span>
+                    <Input
+                      type="number"
+                      min={0}
+                      step={0.05}
+                      value={editDraft.placeFraction}
+                      onChange={(event) =>
+                        setEditDraft((prev) => prev ? { ...prev, placeFraction: event.target.value } : prev)
+                      }
+                    />
+                  </label>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" disabled={savingEdit} onClick={closeEditModal}>
+                Cancel
+              </Button>
+              <Button type="button" disabled={savingEdit} onClick={() => {
+                void handleSaveEdit()
+              }}>
+                {savingEdit ? "Saving..." : "Save Changes"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

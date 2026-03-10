@@ -37,6 +37,10 @@ export type Bet = {
   settledAt?: string
   totalReturn?: number
   profitLoss?: number
+  manualOverride?: {
+    lockedByUser: boolean
+    lockedAt?: string
+  }
 }
 
 export type RaceResult = {

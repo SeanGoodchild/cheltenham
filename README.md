@@ -111,6 +111,7 @@ bun run dev:full
 - Access/auth is still intentionally lightweight for your private group.
 - This is a serverless-style app: race refreshes are initiated while users have the app open, rather than from an always-on worker.
 - SSE uses keepalive heartbeats to reduce idle reconnect churn.
+- Bets manually edited from `My Toots` are treated as user overrides and are no longer auto-updated by settlement or non-runner automation.
 
 ## Deploying On Vercel (Single Host)
 - This repo includes a Vercel catch-all Function route at [`api/[...path].ts`](api/[...path].ts), so `/api/*` is handled on the same host.

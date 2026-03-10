@@ -106,6 +106,11 @@ type ManualOtherSettleInput = {
   totalReturn: number
 }
 
+type ManualBetEditInput = BetDraftInput & {
+  status: BetStatus
+  totalReturn?: number | null
+}
+
 type TestRaceMessageInput = {
   raceId?: string
 }
@@ -1029,6 +1034,10 @@ function getDerivedBetStatus(bet: Bet, atIso: string): BetStatus {
     return bet.status
   }
 
+  if (bet.manualOverride?.lockedByUser) {
+    return bet.status
+  }
+
   return new Date(atIso).getTime() > new Date(bet.lockAt).getTime() ? "locked" : "open"
 }
 
@@ -1402,6 +1411,7 @@ function mapRaceDoc(raw: Record<string, unknown>, id: string): Race {
 }
 
 function mapBetDoc(raw: Record<string, unknown>, id: string): Bet {
+  const manualOverrideRaw = (raw.manualOverride as Record<string, unknown> | undefined) ?? {}
   return {
     id,
     season: String(raw.season ?? CURRENT_SEASON),
@@ -1438,6 +1448,13 @@ function mapBetDoc(raw: Record<string, unknown>, id: string): Bet {
     settledAt: typeof raw.settledAt === "string" ? raw.settledAt : undefined,
     totalReturn: typeof raw.totalReturn === "number" ? raw.totalReturn : undefined,
     profitLoss: typeof raw.profitLoss === "number" ? raw.profitLoss : undefined,
+    manualOverride:
+      Boolean(manualOverrideRaw.lockedByUser)
+        ? {
+            lockedByUser: true,
+            lockedAt: typeof manualOverrideRaw.lockedAt === "string" ? manualOverrideRaw.lockedAt : undefined,
+          }
+        : undefined,
   }
 }
 
@@ -1542,7 +1559,12 @@ async function recomputeAndPersistStats(): Promise<void> {
   await batch.commit()
 }
 
-function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: string): Bet {
+function buildBetPayload(
+  input: BetDraftInput,
+  races: Race[],
+  existingId?: string,
+  options?: { allowLockedEdit?: boolean },
+): Bet {
   const now = nowIso()
   const normalizedBetName = input.betName?.trim()
   const rawBetType = typeof input.betType === "string" ? input.betType.toLowerCase() : ""
@@ -1662,7 +1684,7 @@ function buildBetPayload(input: BetDraftInput, races: Race[], existingId?: strin
 
   const lockAt = deriveLockAt(formattedLegs, races)
   const allLegsComplete = legLifecycles.every((entry) => entry === "complete")
-  if (new Date(now).getTime() > new Date(lockAt).getTime() && !allLegsComplete) {
+  if (!options?.allowLockedEdit && new Date(now).getTime() > new Date(lockAt).getTime() && !allLegsComplete) {
     throw new Error("Race is already locked")
   }
 
@@ -1845,6 +1867,74 @@ async function resolveOtherBetManually(betId: string, input: ManualOtherSettleIn
   await writeEvent("bet_manual_settled", { betId, totalReturn, profitLoss })
 }
 
+async function manuallyEditBet(betId: string, input: ManualBetEditInput): Promise<void> {
+  const races = await getRaces()
+  const snapshot = await betsCol(db).doc(betId).get()
+  if (!snapshot.exists) {
+    throw new Error("Bet not found")
+  }
+
+  const current = mapBetDoc(snapshot.data() as Record<string, unknown>, snapshot.id)
+  const now = nowIso()
+  const basePayload = buildBetPayload(input, races, betId, { allowLockedEdit: true })
+  const requestedStatus = input.status
+  const nextStatus: BetStatus =
+    requestedStatus === "open" ||
+    requestedStatus === "locked" ||
+    requestedStatus === "settled" ||
+    requestedStatus === "void"
+      ? requestedStatus
+      : basePayload.status
+
+  let totalReturn: number | null = null
+  let profitLoss: number | null = null
+  let settledAt: string | null = null
+
+  if (nextStatus === "settled" || nextStatus === "void") {
+    const fallbackReturn =
+      typeof basePayload.totalReturn === "number"
+        ? basePayload.totalReturn
+        : typeof current.totalReturn === "number"
+          ? current.totalReturn
+          : 0
+    const requestedReturn =
+      input.totalReturn === null || input.totalReturn === undefined
+        ? fallbackReturn
+        : Number(input.totalReturn)
+
+    if (!Number.isFinite(requestedReturn) || requestedReturn < 0) {
+      throw new Error("Manual return must be a valid number >= 0")
+    }
+
+    totalReturn = roundMoney(requestedReturn)
+    profitLoss = roundMoney(totalReturn - getBetRiskStake(basePayload))
+    settledAt = current.settledAt ?? now
+  }
+
+  await betsCol(db)
+    .doc(betId)
+    .set(
+      {
+        ...basePayload,
+        id: betId,
+        createdAt: current.createdAt,
+        updatedAt: now,
+        status: nextStatus,
+        settledAt,
+        totalReturn,
+        profitLoss,
+        manualOverride: {
+          lockedByUser: true,
+          lockedAt: now,
+        },
+      },
+      { merge: true },
+    )
+
+  await recomputeAndPersistStats()
+  await writeEvent("bet_manually_edited", { betId, status: nextStatus })
+}
+
 async function settleRace(
   raceId: string,
   options?: { resultSource?: Race["result"]["source"]; skipStatsRecompute?: boolean },
@@ -1867,7 +1957,7 @@ async function settleRace(
 
   relatedBets.docs.forEach((entry) => {
     const bet = mapBetDoc(entry.data() as Record<string, unknown>, entry.id)
-    if (bet.status === "settled") {
+    if (bet.status === "settled" || bet.manualOverride?.lockedByUser) {
       return
     }
 
@@ -2159,7 +2249,7 @@ async function autoVoidNonRunnerLegs(
 
   snapshot.docs.forEach((entry) => {
     const bet = mapBetDoc(entry.data() as Record<string, unknown>, entry.id)
-    if (bet.status === "settled" || bet.status === "void") {
+    if (bet.status === "settled" || bet.status === "void" || bet.manualOverride?.lockedByUser) {
       return
     }
 
@@ -2781,6 +2871,17 @@ export async function handleApiRequest(request: Request): Promise<Response> {
       }
       const input = await parseJson<ManualOtherSettleInput>(request)
       await resolveOtherBetManually(betId, input)
+      await refreshAndBroadcastIfChanged()
+      return jsonResponse({ ok: true })
+    }
+
+    if (request.method === "POST" && pathname.startsWith("/api/bets/") && pathname.endsWith("/manual-edit")) {
+      const betId = pathname.split("/")[3]
+      if (!betId) {
+        return errorResponse("Missing bet id", 400)
+      }
+      const input = await parseJson<ManualBetEditInput>(request)
+      await manuallyEditBet(betId, input)
       await refreshAndBroadcastIfChanged()
       return jsonResponse({ ok: true })
     }

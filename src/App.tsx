@@ -29,6 +29,7 @@ import { useTrackerData } from "@/hooks/useTrackerData"
 import {
   createBet,
   getLastRaceImportRun,
+  manuallyEditBet,
   refreshRaceData,
   resolveOtherBetManually,
   removeBet,
@@ -415,6 +416,11 @@ export function App() {
     await resolveOtherBetManually(input)
   }
 
+  async function handleManualEditBet(input: Parameters<typeof manuallyEditBet>[0]) {
+    setActionError(null)
+    await manuallyEditBet(input)
+  }
+
   async function runRaceRefresh() {
     setRefreshingRaceData(true)
     try {
@@ -783,6 +789,7 @@ export function App() {
                   user={selectedSummaryUser}
                   bets={bets}
                   races={races}
+                  onManualEditBet={handleManualEditBet}
                   onResolveOtherBet={handleResolveOtherBet}
                 />
               ) : null}

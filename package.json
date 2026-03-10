@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bun run dev:full",
     "dev:client": "vite",
-    "dev:server": "bun run server/index.ts",
+    "dev:server": "bun --watch server/index.ts",
     "dev:full": "bun run dev:server & bun run dev:client",
     "build": "tsc -b && vite build",
     "lint": "eslint .",

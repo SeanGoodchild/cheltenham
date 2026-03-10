@@ -127,6 +127,10 @@ export function getDerivedBetStatus(bet: Bet, nowIso: string): BetStatus {
     return bet.status
   }
 
+  if (bet.manualOverride?.lockedByUser) {
+    return bet.status
+  }
+
   return parseISO(nowIso).getTime() > parseISO(bet.lockAt).getTime() ? "locked" : "open"
 }
 
