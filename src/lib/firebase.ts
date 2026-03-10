@@ -212,6 +212,10 @@ export async function bootstrapSeason(): Promise<void> {
   await request<{ ok: true }>("/api/bootstrap", { method: "POST" })
 }
 
+export async function initializeTrackerData(): Promise<void> {
+  await ensureStream()
+}
+
 export function subscribeUsers(callback: (users: UserProfile[]) => void): () => void {
   return makeSubscription(usersListeners, () => stateCache.users, callback)
 }

@@ -2577,7 +2577,6 @@ async function ensureBootstrapped() {
   if (!bootstrapPromise) {
     bootstrapPromise = (async () => {
       await bootstrapSeason()
-      await recomputeAndPersistStats()
       currentState = await loadState()
       currentDigest = digestState(currentState)
       ensureStateRefreshTicker()
@@ -2634,7 +2633,7 @@ export async function handleApiRequest(request: Request): Promise<Response> {
     await ensureBootstrapped()
 
     if (request.method === "GET" && pathname === "/api/state") {
-      return jsonResponse(await loadState())
+      return jsonResponse(currentState ?? (await loadState()))
     }
 
     if (request.method === "GET" && pathname === "/api/stream") {
@@ -2689,8 +2688,10 @@ export async function handleApiRequest(request: Request): Promise<Response> {
 
     if (request.method === "POST" && pathname === "/api/bootstrap") {
       await bootstrapSeason()
-      await recomputeAndPersistStats()
-      await refreshAndBroadcastIfChanged()
+      if (!currentState) {
+        currentState = await loadState()
+        currentDigest = digestState(currentState)
+      }
       return jsonResponse({ ok: true })
     }
 

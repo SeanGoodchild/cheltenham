@@ -1,4 +1,4 @@
-import type { Race } from "@/lib/types"
+import type { Race } from "./types"
 
 export type SportingLifePageType = "racecards" | "results"
 

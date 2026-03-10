@@ -46,6 +46,7 @@ type MainBoardUserView = { mode: "all" | "me" }
 const MINUTE_MS = 60_000
 const AUTO_REFRESH_BUSY_BACKOFF_MS = MINUTE_MS
 const AUTO_REFRESH_FAILED_BACKOFF_MS = 2 * MINUTE_MS
+const AUTO_REFRESH_INITIAL_GRACE_MS = 15_000
 
 type TabDef = { id: AppTab; label: string; shortLabel: string; icon: typeof Wallet }
 
@@ -293,6 +294,7 @@ export function App() {
     typeof document === "undefined" ? true : document.visibilityState === "visible",
   )
   const raceImportRunRef = useRef<RaceImportRun | null>(null)
+  const autoRefreshPrimedRef = useRef(false)
 
   const derivedUserStats = useMemo(() => {
     if (userStats.length > 0) {
@@ -538,7 +540,12 @@ export function App() {
       )
     }
 
-    void evaluateAutoRefresh()
+    if (!autoRefreshPrimedRef.current) {
+      autoRefreshPrimedRef.current = true
+      scheduleNextCheck(AUTO_REFRESH_INITIAL_GRACE_MS)
+    } else {
+      void evaluateAutoRefresh()
+    }
 
     return () => {
       cancelled = true

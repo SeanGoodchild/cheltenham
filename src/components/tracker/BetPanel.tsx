@@ -174,6 +174,7 @@ export function BetPanel({
     0: buildQuickPickForRace(nextRace),
   })
   const [accaOddsManuallySet, setAccaOddsManuallySet] = useState(false)
+  const [showAllOpenBets, setShowAllOpenBets] = useState(false)
   const nextRaceRef = useRef(nextRace)
 
   useEffect(() => {
@@ -257,6 +258,10 @@ export function BetPanel({
   }, [racesSorted])
   const raceMap = useMemo(() => new Map(racesSorted.map((race) => [race.id, race])), [racesSorted])
   const autoAccumulatorOdds = useMemo(() => computeAccumulatorDraftOdds(draft.legs), [draft.legs])
+  const visibleOpenBets = useMemo(
+    () => (showAllOpenBets ? currentOpenBets : currentOpenBets.slice(0, 8)),
+    [currentOpenBets, showAllOpenBets],
+  )
   const requiredOdds = draft.betType === "accumulator" ? draft.oddsUsed : draft.legs[0]?.decimalOdds
   const hasMissingOdds = draft.betType === "other" ? false : !isValidOdds(requiredOdds)
   const hasMissingOtherName = draft.betType === "other" && !draft.betName?.trim()
@@ -1009,10 +1014,21 @@ export function BetPanel({
       {currentOpenBets.length > 0 ? (
         <Card className="shadow-xs">
           <CardHeader>
-            <CardTitle className="text-sm font-semibold">Open Toots</CardTitle>
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="text-sm font-semibold">Open Toots</CardTitle>
+              {currentOpenBets.length > 8 ? (
+                <button
+                  type="button"
+                  className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                  onClick={() => setShowAllOpenBets((prev) => !prev)}
+                >
+                  {showAllOpenBets ? "Show less" : `Show all ${currentOpenBets.length}`}
+                </button>
+              ) : null}
+            </div>
           </CardHeader>
           <CardContent className="space-y-2">
-            {currentOpenBets.map((bet) => {
+            {visibleOpenBets.map((bet) => {
               const oddsUsed = resolveBetOddsUsed(bet)
               const potentialWin = calculateBetPotentialProfit(bet)
               const betLabel =
