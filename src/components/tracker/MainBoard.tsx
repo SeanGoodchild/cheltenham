@@ -4,19 +4,18 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCurrency, formatMarketOdds, formatPercent } from "@/lib/format"
 import { normalizeHorseName } from "@/lib/horse"
-import type { RaceOutcomeRange } from "@/lib/settlement"
+import { calculateBetPotentialProfit } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
 import type { Bet, Race, UserProfile, UserStats } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 type MainBoardProps = {
   bets: Bet[]
+  allBets: Bet[]
   users: UserProfile[]
+  allUsers: UserProfile[]
   races: Race[]
   stats: UserStats[]
-  raceRanges: RaceOutcomeRange[]
-  bestOutcomeLabel: string
-  worstOutcomeLabel: string
 }
 
 type RunnerBackerDetail = {
@@ -26,6 +25,7 @@ type RunnerBackerDetail = {
   userAvatarSrc?: string
   betType: Bet["betType"]
   stakeTotal: number
+  potentialProfit: number
 }
 
 type NextRaceRunnerRow = {
@@ -97,25 +97,6 @@ function buildRankMap(entries: Array<{ userId: string; displayName: string; prof
   return rankByUser
 }
 
-function extractScenarioHorseName(scenario: string): string {
-  const trimmed = scenario.trim()
-  if (!trimmed) {
-    return ""
-  }
-
-  const winsIndex = trimmed.toLowerCase().indexOf(" wins")
-  if (winsIndex > 0) {
-    return trimmed.slice(0, winsIndex).trim()
-  }
-
-  const commaIndex = trimmed.indexOf(",")
-  if (commaIndex > 0) {
-    return trimmed.slice(0, commaIndex).trim()
-  }
-
-  return trimmed
-}
-
 function buildNextRaceRunnerRows(nextRace: Race, bets: Bet[], users: UserProfile[]): NextRaceRunnerRow[] {
   const usersById = new Map(users.map((user) => [user.id, user]))
   const favouriteName = normalizeHorseName(nextRace.marketFavourite?.horseName ?? "")
@@ -173,6 +154,7 @@ function buildNextRaceRunnerRows(nextRace: Race, bets: Bet[], users: UserProfile
         userAvatarSrc: getUserAvatarSrc(user.id),
         betType: bet.betType,
         stakeTotal: bet.stakeTotal,
+        potentialProfit: calculateBetPotentialProfit(bet),
       }]
     })
 
@@ -204,6 +186,28 @@ function buildNextRaceRunnerRows(nextRace: Race, bets: Bet[], users: UserProfile
 
     return a.horseName.localeCompare(b.horseName)
   })
+}
+
+function buildClFavouriteSummary(runnerRows: NextRaceRunnerRow[]) {
+  const candidates = runnerRows
+    .map((runner) => ({
+      horseName: runner.horseName,
+      oddsLabel: runner.oddsLabel,
+      backerCount: new Set(runner.backers.map((entry) => entry.userId)).size,
+      potentialProfit: runner.backers.reduce((acc, entry) => acc + entry.potentialProfit, 0),
+    }))
+    .filter((runner) => runner.backerCount > 0)
+    .sort((a, b) => {
+      if (a.backerCount !== b.backerCount) {
+        return b.backerCount - a.backerCount
+      }
+      if (a.potentialProfit !== b.potentialProfit) {
+        return b.potentialProfit - a.potentialProfit
+      }
+      return a.horseName.localeCompare(b.horseName)
+    })
+
+  return candidates[0] ?? null
 }
 
 function BackerCluster({ backers }: { backers: RunnerBackerDetail[] }) {
@@ -257,18 +261,12 @@ function BackerCluster({ backers }: { backers: RunnerBackerDetail[] }) {
 
 function CurrentRaceCard({
   races,
-  bets,
-  raceRanges,
-  users,
-  bestOutcomeLabel,
-  worstOutcomeLabel,
+  allBets,
+  allUsers,
 }: {
   races: Race[]
-  bets: Bet[]
-  raceRanges: RaceOutcomeRange[]
-  users: UserProfile[]
-  bestOutcomeLabel: string
-  worstOutcomeLabel: string
+  allBets: Bet[]
+  allUsers: UserProfile[]
 }) {
   const orderedRaces = useMemo(
     () => [...races].sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime()),
@@ -296,12 +294,10 @@ function CurrentRaceCard({
     )
   }
 
-  const raceBets = bets.filter((bet) => bet.legs.some((leg) => leg.raceId === currentRace.id))
+  const raceBets = allBets.filter((bet) => bet.legs.some((leg) => leg.raceId === currentRace.id))
   const raceStaked = raceBets.reduce((acc, bet) => acc + bet.stakeTotal, 0)
-  const currentRaceRange = raceRanges.find((entry) => entry.raceId === currentRace.id)
-  const runnerRows = buildNextRaceRunnerRows(currentRace, bets, users)
-  const bestHorseName = currentRaceRange ? extractScenarioHorseName(currentRaceRange.bestScenario) : ""
-  const worstHorseName = currentRaceRange ? extractScenarioHorseName(currentRaceRange.worstScenario) : ""
+  const runnerRows = buildNextRaceRunnerRows(currentRace, allBets, allUsers)
+  const clFavourite = buildClFavouriteSummary(runnerRows)
   const canGoPrevious = selectedRaceIndex > 0
   const canGoNext = selectedRaceIndex >= 0 && selectedRaceIndex < orderedRaces.length - 1
   const isDefaultRaceView = currentRace.id === defaultRaceId
@@ -357,25 +353,23 @@ function CurrentRaceCard({
             <Badge variant="outline" className="tabular-nums">{formatCurrency(raceStaked)}</Badge>
           </div>
         </div>
-        {currentRaceRange ? (
+        {clFavourite ? (
           <div className="mt-3 rounded-lg border border-border/40 bg-muted/10 px-3 py-2.5">
             <div className="grid gap-1.5 text-sm">
               <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">{bestOutcomeLabel}</span>
+                <span className="text-muted-foreground">CL Favourite</span>
                 <div className="text-right">
-                  <div className="font-semibold tabular-nums text-primary">{formatCurrency(currentRaceRange.bestClosePnl)}</div>
-                  {bestHorseName ? (
-                    <div className="text-[11px] text-foreground">{bestHorseName}</div>
-                  ) : null}
+                  <div className="font-semibold text-foreground">{clFavourite.horseName}</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {clFavourite.backerCount} {clFavourite.backerCount === 1 ? "backer" : "backers"}
+                    {clFavourite.oddsLabel ? ` • ${clFavourite.oddsLabel}` : ""}
+                  </div>
                 </div>
               </div>
               <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">{worstOutcomeLabel}</span>
-                <div className="text-right">
-                  <div className="font-semibold tabular-nums text-destructive">{formatCurrency(currentRaceRange.worstClosePnl)}</div>
-                  {worstHorseName ? (
-                    <div className="text-[11px] text-foreground">{worstHorseName}</div>
-                  ) : null}
+                <span className="text-muted-foreground">Potential winnings if it comes first</span>
+                <div className="font-semibold tabular-nums text-primary">
+                  {formatCurrency(clFavourite.potentialProfit)}
                 </div>
               </div>
             </div>
@@ -458,12 +452,11 @@ function formatLeagueCurrency(value: number, userId: string) {
 
 export function MainBoard({
   bets,
+  allBets,
   users,
+  allUsers,
   races,
   stats,
-  raceRanges,
-  bestOutcomeLabel,
-  worstOutcomeLabel,
 }: MainBoardProps) {
   const statsByUser = new Map(stats.map((entry) => [entry.userId, entry]))
   const latestSettledRace = races
@@ -536,11 +529,8 @@ export function MainBoard({
     <div className="space-y-4">
       <CurrentRaceCard
         races={races}
-        bets={bets}
-        raceRanges={raceRanges}
-        users={users}
-        bestOutcomeLabel={bestOutcomeLabel}
-        worstOutcomeLabel={worstOutcomeLabel}
+        allBets={allBets}
+        allUsers={allUsers}
       />
 
       <Card className="shadow-xs">

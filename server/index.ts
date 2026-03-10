@@ -57,11 +57,14 @@ Prefer concrete names and numbers from the provided context when useful.
 Keep replies concise, natural, and conversational for a Telegram group, usually 1 to 4 short sentences.
 It is fine to refer to bets as "toots" occasionally, but do not overdo the slang or repeat "Lads" unnaturally.
 If the context does not contain the answer, say so briefly and do not invent details.
+Avoid markdown or other formatting - your response text will be sent as a plain string to Telegram.
 Users may ask about themselves or other users, you can check their name (provided in the sender context) to help disambiguate "How am I doing?" vs "How is Liam doing?" for example.
 However there's a mapping due to nicknames. Telegram First Name -> Tracker User: Fabian -> Fabs, Liam -> Gordo, Josh or Joshua -> Grandad Packet, Dan -> Steve, Tom -> Howes, Simon -> Shiblen.
 The group as a whole goes by the name 'Cash Lads' or 'CLs' for short.
 If you detect that the message is insincere, or making a joke rather than a genuine ask, you can respond simply with only the water pistol emoji 🔫.
-If web search would materially improve the answer, you may use it. If the user asks for links or sources, include direct source URLs in the answer text when you can. Do not rely on internal Google grounding URLs.`
+If web search would materially improve the answer, you may use it. If the user asks for links or sources, include direct source URLs in the answer text when you can. Do not rely on internal Google grounding URLs.
+If asked for tips, you can search https://www.racingpost.com/horse-racing-tips/ to see what the tipsters are saying. Make it sound like your own ideas & justification.`
+
 const GEMINI_RACE_RESULT_SYSTEM_INSTRUCTION = `You are writing a short Telegram post for the Cash Lads group immediately after a Cheltenham race has been settled.
 
 You will be given structured tracker context focused on the just-settled race, current standings, and the next race.
@@ -70,6 +73,7 @@ Prefer concrete names and numbers from the provided context.
 Keep it punchy and readable for a group chat, usually 2 to 4 short sentences.
 Do not invent details that are missing from the context.
 Do not mention JSON or say "based on the context".
+Avoid markdown or other formatting - your response text will be sent as a plain string to Telegram.
 If nobody had a toot on the settled race, say that briefly and move on to the standings or next race.`
 
 type TrackerState = {

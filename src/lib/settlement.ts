@@ -12,25 +12,16 @@ import type {
 } from "./types.js"
 import { normalizeHorseName } from "./horse.js"
 
-export type RaceOutcomeRange = {
+export type RacePnlRange = {
   raceId: string
   raceName: string
   offTime: string
   openPnl: number
   actualClosePnl?: number
-  bestClosePnl: number
-  worstClosePnl: number
-  bestDelta: number
-  worstDelta: number
-  bestScenario: string
-  worstScenario: string
   isForecast: boolean
 }
 
-type SimulatedRaceOutcome = {
-  winner?: string
-  placed: string[]
-}
+export type RaceOutcomeRange = RacePnlRange
 
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100
@@ -366,169 +357,7 @@ export function toCumulativeSeries(bets: Bet[]): Array<{ label: string; value: n
   })
 }
 
-function uniqueHorseNames(names: string[]): string[] {
-  const seen = new Set<string>()
-  return names.filter((name) => {
-    const normalized = normalizeHorseName(name)
-    if (!normalized || seen.has(normalized)) {
-      return false
-    }
-    seen.add(normalized)
-    return true
-  })
-}
-
-function combinations<T>(items: T[], count: number): T[][] {
-  if (count <= 0) {
-    return [[]]
-  }
-  if (count > items.length) {
-    return []
-  }
-
-  const result: T[][] = []
-  const current: T[] = []
-
-  function walk(start: number) {
-    if (current.length === count) {
-      result.push([...current])
-      return
-    }
-
-    for (let index = start; index <= items.length - (count - current.length); index += 1) {
-      current.push(items[index])
-      walk(index + 1)
-      current.pop()
-    }
-  }
-
-  walk(0)
-  return result
-}
-
-function formatScenario(outcome: SimulatedRaceOutcome): string {
-  if (!outcome.winner) {
-    return "No valid race outcome"
-  }
-
-  const winner = outcome.winner
-
-  const placersExWinner = outcome.placed.filter(
-    (entry) => normalizeHorseName(entry) !== normalizeHorseName(winner),
-  )
-
-  if (!placersExWinner.length) {
-    return `${winner} wins`
-  }
-
-  return `${winner} wins, placed ${placersExWinner.join(", ")}`
-}
-
-function buildSimulatedRaceOutcomes(race: Race, bets: Bet[]): SimulatedRaceOutcome[] {
-  const runners = uniqueHorseNames(
-    (race.runnersDetailed?.length
-      ? race.runnersDetailed.filter((runner) => !runner.nonRunner).map((runner) => runner.horseName)
-      : race.runners) ?? [],
-  )
-
-  if (!runners.length) {
-    return [{ winner: undefined, placed: [] }]
-  }
-
-  const placesPaid = Math.max(
-    1,
-    ...bets
-      .filter((bet) => bet.betType === "each_way")
-      .map((bet) => Math.max(1, bet.ewTerms?.placesPaid ?? 1)),
-  )
-
-  return runners.flatMap((winner) => {
-    const otherRunners = runners.filter((runner) => normalizeHorseName(runner) !== normalizeHorseName(winner))
-    const additionalPlacers = Math.max(0, Math.min(placesPaid - 1, otherRunners.length))
-    const placerCombos = combinations(otherRunners, additionalPlacers)
-
-    if (!placerCombos.length) {
-      return [{ winner, placed: [winner] }]
-    }
-
-    return placerCombos.map((placers) => ({
-      winner,
-      placed: [winner, ...placers],
-    }))
-  })
-}
-
-function deriveLegResultForSimulatedOutcome(
-  selectionName: string,
-  betType: Bet["betType"],
-  ewTerms: Bet["ewTerms"] | undefined,
-  outcome: SimulatedRaceOutcome,
-): LegResult {
-  const normalizedSelection = normalizeHorseName(selectionName)
-  const normalizedWinner = normalizeHorseName(outcome.winner ?? "")
-  if (normalizedSelection && normalizedWinner && normalizedSelection === normalizedWinner) {
-    return "win"
-  }
-
-  if (betType === "each_way") {
-    const allowedPlacers = outcome.placed.slice(0, Math.max(1, ewTerms?.placesPaid ?? 1))
-    if (allowedPlacers.some((entry) => normalizeHorseName(entry) === normalizedSelection)) {
-      return "place"
-    }
-  }
-
-  return "lose"
-}
-
-function getLegResultAtRace(
-  bet: Bet,
-  leg: BetLeg,
-  targetRace: Race,
-  racesById: Map<string, Race>,
-  outcome: SimulatedRaceOutcome,
-): LegResult {
-  if (leg.raceId === targetRace.id) {
-    return deriveLegResultForSimulatedOutcome(leg.selectionName, bet.betType, bet.ewTerms, outcome)
-  }
-
-  const race = racesById.get(leg.raceId)
-  if (!race) {
-    return "pending"
-  }
-
-  const legRaceTime = parseISO(race.offTime).getTime()
-  const targetRaceTime = parseISO(targetRace.offTime).getTime()
-  if (legRaceTime >= targetRaceTime) {
-    return "pending"
-  }
-
-  return deriveLegResult(leg.selectionName, race)
-}
-
-function calculateProjectedProfitLossForOutcome(
-  bet: Bet,
-  targetRace: Race,
-  racesById: Map<string, Race>,
-  outcome: SimulatedRaceOutcome,
-): number {
-  if (bet.betType === "other") {
-    return 0
-  }
-
-  const projectedBet: Bet = {
-    ...bet,
-    legs: bet.legs.map((leg) => ({
-      ...leg,
-      result: getLegResultAtRace(bet, leg, targetRace, racesById, outcome),
-    })),
-  }
-
-  const totalReturn = calculateBetReturn(projectedBet)
-  return roundMoney(totalReturn - getBetRiskStake(bet))
-}
-
-export function buildRaceOutcomeRanges(races: Race[], bets: Bet[]): RaceOutcomeRange[] {
-  const racesById = new Map(races.map((race) => [race.id, race]))
+export function buildRacePnlRanges(races: Race[], bets: Bet[]): RacePnlRange[] {
   const sortedRaces = [...races].sort((a, b) => parseISO(a.offTime).getTime() - parseISO(b.offTime).getTime())
   const displayRaces = sortedRaces
 
@@ -555,49 +384,8 @@ export function buildRaceOutcomeRanges(races: Race[], bets: Bet[]): RaceOutcomeR
 
   return displayRaces.map((race) => {
     const openPnl = cumulativeActual
-    const settlementBets = bets.filter((bet) => {
-      if (bet.betType === "other") {
-        return false
-      }
-      return getBetSettlementRaceId(bet, races) === race.id
-    })
-
-    let bestDelta = 0
-    let worstDelta = 0
-    let bestScenario = "No betting swing"
-    let worstScenario = "No betting swing"
-
-    if (settlementBets.length > 0) {
-      const outcomes = buildSimulatedRaceOutcomes(race, settlementBets)
-      let bestOutcomeValue = Number.NEGATIVE_INFINITY
-      let worstOutcomeValue = Number.POSITIVE_INFINITY
-
-      outcomes.forEach((outcome) => {
-        const delta = roundMoney(
-          settlementBets.reduce(
-            (acc, bet) => acc + calculateProjectedProfitLossForOutcome(bet, race, racesById, outcome),
-            0,
-          ),
-        )
-
-        if (delta > bestOutcomeValue) {
-          bestOutcomeValue = delta
-          bestDelta = delta
-          bestScenario = formatScenario(outcome)
-        }
-
-        if (delta < worstOutcomeValue) {
-          worstOutcomeValue = delta
-          worstDelta = delta
-          worstScenario = formatScenario(outcome)
-        }
-      })
-    }
-
     const actualDelta = roundMoney(actualPnlBySettlementRace.get(race.id) ?? 0)
     const actualClosePnl = race.status === "settled" ? roundMoney(openPnl + actualDelta) : undefined
-    const bestClosePnl = roundMoney(openPnl + bestDelta)
-    const worstClosePnl = roundMoney(openPnl + worstDelta)
 
     if (race.status === "settled") {
       cumulativeActual = actualClosePnl ?? cumulativeActual
@@ -609,13 +397,9 @@ export function buildRaceOutcomeRanges(races: Race[], bets: Bet[]): RaceOutcomeR
       offTime: race.offTime,
       openPnl,
       actualClosePnl,
-      bestClosePnl,
-      worstClosePnl,
-      bestDelta,
-      worstDelta,
-      bestScenario,
-      worstScenario,
       isForecast: race.status !== "settled",
     }
   })
 }
+
+export const buildRaceOutcomeRanges = buildRacePnlRanges

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 
 import {
-  initializeTrackerData,
+  bootstrapSeason,
   subscribeBets,
   subscribeGlobalStats,
   subscribeRaces,
@@ -23,17 +23,9 @@ export function useTrackerData() {
     let mounted = true
     setBootstrapping(true)
 
-    const unsubscribers = [
-      subscribeUsers(setUsers),
-      subscribeRaces(setRaces),
-      subscribeBets(setBets),
-      subscribeUserStats(setUserStats),
-      subscribeGlobalStats(setGlobalStats),
-    ]
-
     ;(async () => {
       try {
-        await initializeTrackerData()
+        await bootstrapSeason()
       } catch (bootstrapError) {
         if (mounted) {
           setError(bootstrapError instanceof Error ? bootstrapError.message : "Failed to bootstrap season")
@@ -47,9 +39,26 @@ export function useTrackerData() {
 
     return () => {
       mounted = false
-      unsubscribers.forEach((unsubscribe) => unsubscribe())
     }
   }, [])
+
+  useEffect(() => {
+    if (bootstrapping) {
+      return
+    }
+
+    const unsubscribers = [
+      subscribeUsers(setUsers),
+      subscribeRaces(setRaces),
+      subscribeBets(setBets),
+      subscribeUserStats(setUserStats),
+      subscribeGlobalStats(setGlobalStats),
+    ]
+
+    return () => {
+      unsubscribers.forEach((unsubscribe) => unsubscribe())
+    }
+  }, [bootstrapping])
 
   const value = useMemo(
     () => ({

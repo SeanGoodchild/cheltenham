@@ -10,7 +10,7 @@ import {
 } from "recharts"
 
 import { formatCurrency } from "@/lib/format"
-import type { RaceOutcomeRange } from "@/lib/settlement"
+import type { RacePnlRange } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
 
 type CandlePoint = {
@@ -26,7 +26,7 @@ type CandlePoint = {
 }
 
 function buildCandleData(
-  raceRanges: RaceOutcomeRange[],
+  raceRanges: RacePnlRange[],
 ): {
   points: CandlePoint[]
   shiftOffset: number
@@ -88,7 +88,7 @@ function buildCandleData(
 }
 
 type PnlCandlesPanelProps = {
-  raceRanges: RaceOutcomeRange[]
+  raceRanges: RacePnlRange[]
 }
 
 function CandleTooltip(props: {

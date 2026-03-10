@@ -35,7 +35,7 @@ import {
   updateBet,
 } from "@/lib/firebase"
 import { getStoredOddsFormat, persistOddsFormat, type OddsFormat } from "@/lib/format"
-import { buildRaceOutcomeRanges, computeGlobalStats, computeUserStats } from "@/lib/settlement"
+import { buildRacePnlRanges, computeGlobalStats, computeUserStats } from "@/lib/settlement"
 import { formatIso, nowIso } from "@/lib/time"
 import type { Bet, GlobalStats, Race, RaceImportRun, UserProfile } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -46,7 +46,6 @@ type MainBoardUserView = { mode: "all" | "me" }
 const MINUTE_MS = 60_000
 const AUTO_REFRESH_BUSY_BACKOFF_MS = MINUTE_MS
 const AUTO_REFRESH_FAILED_BACKOFF_MS = 2 * MINUTE_MS
-const AUTO_REFRESH_INITIAL_GRACE_MS = 15_000
 
 type TabDef = { id: AppTab; label: string; shortLabel: string; icon: typeof Wallet }
 
@@ -294,21 +293,7 @@ export function App() {
     typeof document === "undefined" ? true : document.visibilityState === "visible",
   )
   const raceImportRunRef = useRef<RaceImportRun | null>(null)
-  const autoRefreshPrimedRef = useRef(false)
-
-  const derivedUserStats = useMemo(() => {
-    if (userStats.length > 0) {
-      return userStats
-    }
-    return users.map((user) => computeUserStats(user, bets))
-  }, [bets, userStats, users])
-
-  const derivedGlobalStats: GlobalStats = useMemo(() => {
-    if (globalStats) {
-      return globalStats
-    }
-    return computeGlobalStats(bets, users, nowIso())
-  }, [bets, globalStats, users])
+  const isMainBoardActive = activeTab === "main-cashboard"
 
   const hasValidSelectedUser = users.some((user) => user.id === selectedUserId)
   const resolvedSelectedUserId = hasValidSelectedUser ? selectedUserId : ""
@@ -332,22 +317,42 @@ export function App() {
     } as CSSProperties
   }, [isGordoUltraDark])
   const isMainBoardMeView = mainBoardUserView.mode === "me" && Boolean(resolvedSelectedUserId)
-  const mainBoardUsers =
-    isMainBoardMeView ? users.filter((user) => user.id === resolvedSelectedUserId) : users
-  const mainBoardBets =
-    isMainBoardMeView ? bets.filter((bet) => bet.userId === resolvedSelectedUserId) : bets
-  const mainBoardStats =
-    isMainBoardMeView
-      ? derivedUserStats.filter((entry) => entry.userId === resolvedSelectedUserId)
-      : derivedUserStats
-  const mainBoardGlobalStats: GlobalStats =
-    !isMainBoardMeView
-      ? derivedGlobalStats
-      : computeGlobalStats(mainBoardBets, mainBoardUsers, nowIso())
-  const mainBoardRaceRanges = useMemo(
-    () => buildRaceOutcomeRanges(races, mainBoardBets),
-    [mainBoardBets, races],
-  )
+  const mainBoardData = useMemo(() => {
+    if (!isMainBoardActive) {
+      return null
+    }
+
+    const scopedUsers =
+      isMainBoardMeView ? users.filter((user) => user.id === resolvedSelectedUserId) : users
+    const scopedBets =
+      isMainBoardMeView ? bets.filter((bet) => bet.userId === resolvedSelectedUserId) : bets
+    const allUserStats = userStats.length > 0 ? userStats : users.map((user) => computeUserStats(user, bets))
+    const scopedStats =
+      isMainBoardMeView
+        ? allUserStats.filter((entry) => entry.userId === resolvedSelectedUserId)
+        : allUserStats
+    const scopedGlobalStats: GlobalStats =
+      !isMainBoardMeView
+        ? globalStats ?? computeGlobalStats(bets, users, nowIso())
+        : computeGlobalStats(scopedBets, scopedUsers, nowIso())
+
+    return {
+      users: scopedUsers,
+      bets: scopedBets,
+      stats: scopedStats,
+      globalStats: scopedGlobalStats,
+      raceRanges: buildRacePnlRanges(races, scopedBets),
+    }
+  }, [
+    bets,
+    globalStats,
+    isMainBoardActive,
+    isMainBoardMeView,
+    races,
+    resolvedSelectedUserId,
+    userStats,
+    users,
+  ])
   const nextRaceInfo = useMemo(() => {
     const nextRace = races
       .filter((race) => new Date(race.offTime).getTime() > nowTickMs)
@@ -415,19 +420,6 @@ export function App() {
     setOddsFormat(nextFormat)
     persistOddsFormat(nextFormat)
   }
-
-  useEffect(() => {
-    if (bootstrapping) {
-      return
-    }
-    void getLastRaceImportRun()
-      .then((run) => {
-        setRaceImportRun(run)
-      })
-      .catch(() => {
-        // non-fatal for initial render
-      })
-  }, [bootstrapping])
 
   useEffect(() => {
     if (users.length === 0) {
@@ -540,12 +532,7 @@ export function App() {
       )
     }
 
-    if (!autoRefreshPrimedRef.current) {
-      autoRefreshPrimedRef.current = true
-      scheduleNextCheck(AUTO_REFRESH_INITIAL_GRACE_MS)
-    } else {
-      void evaluateAutoRefresh()
-    }
+    void evaluateAutoRefresh()
 
     return () => {
       cancelled = true
@@ -706,7 +693,7 @@ export function App() {
                 />
               ) : null}
 
-              {activeTab === "main-cashboard" ? (
+              {activeTab === "main-cashboard" && mainBoardData ? (
                 <div className="space-y-3 md:space-y-4">
                   <div className="flex items-center justify-between">
                     <h2 className="text-base font-bold">Cashboard</h2>
@@ -739,22 +726,21 @@ export function App() {
                   </div>
                   <StatsCards
                     variant="hero"
-                    stats={mainBoardGlobalStats}
+                    stats={mainBoardData.globalStats}
                   />
-                  <PnlCandlesPanel raceRanges={mainBoardRaceRanges} />
+                  <PnlCandlesPanel raceRanges={mainBoardData.raceRanges} />
                   <MainBoard
-                    bets={mainBoardBets}
-                    users={mainBoardUsers}
+                    bets={mainBoardData.bets}
+                    allBets={bets}
+                    users={mainBoardData.users}
+                    allUsers={users}
                     races={races}
-                    stats={mainBoardStats}
-                    raceRanges={mainBoardRaceRanges}
-                    bestOutcomeLabel={isMainBoardMeView ? "Best personal outcome" : "Best CL outcome"}
-                    worstOutcomeLabel={isMainBoardMeView ? "Worst personal outcome" : "Worst CL outcome"}
+                    stats={mainBoardData.stats}
                   />
                   <StatsCards
                     title="Other Stats"
                     variant="other"
-                    stats={mainBoardGlobalStats}
+                    stats={mainBoardData.globalStats}
                   />
                 </div>
               ) : null}
