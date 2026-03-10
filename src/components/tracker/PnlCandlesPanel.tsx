@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
 import {
   Bar,
   CartesianGrid,
@@ -132,9 +132,10 @@ export function PnlCandlesPanel({ raceRanges }: PnlCandlesPanelProps) {
   const chartHostRef = useRef<HTMLDivElement | null>(null)
   const [chartWidth, setChartWidth] = useState(0)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = chartHostRef.current
     if (!element) {
+      setChartWidth(0)
       return
     }
 
@@ -152,7 +153,7 @@ export function PnlCandlesPanel({ raceRanges }: PnlCandlesPanelProps) {
     return () => {
       observer.disconnect()
     }
-  }, [])
+  }, [candle.points.length])
 
   return (
     <div className="rounded-xl border border-border/50 bg-muted/10 p-3.5">

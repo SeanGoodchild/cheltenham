@@ -428,7 +428,10 @@ export function App() {
       setRaceImportRun(payload.run)
       return payload.run
     } catch (refreshError) {
-      setActionError(refreshError instanceof Error ? refreshError.message : "Failed to refresh race data")
+      const message = refreshError instanceof Error ? refreshError.message : "Failed to refresh race data"
+      if (message !== "Race import already in progress") {
+        setActionError(message)
+      }
       return null
     } finally {
       setRefreshingRaceData(false)
