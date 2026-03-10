@@ -46,6 +46,7 @@ type MainBoardUserView = { mode: "all" | "me" }
 const MINUTE_MS = 60_000
 const AUTO_REFRESH_BUSY_BACKOFF_MS = MINUTE_MS
 const AUTO_REFRESH_FAILED_BACKOFF_MS = 2 * MINUTE_MS
+const OVERDUE_RACE_REFRESH_BACKOFF_MS = MINUTE_MS
 
 type TabDef = { id: AppTab; label: string; shortLabel: string; icon: typeof Wallet }
 
@@ -293,6 +294,7 @@ export function App() {
     typeof document === "undefined" ? true : document.visibilityState === "visible",
   )
   const raceImportRunRef = useRef<RaceImportRun | null>(null)
+  const overdueRefreshAttemptRef = useRef<{ raceId: string; attemptedAtMs: number } | null>(null)
   const isMainBoardActive = activeTab === "main-cashboard"
 
   const hasValidSelectedUser = users.some((user) => user.id === selectedUserId)
@@ -491,6 +493,18 @@ export function App() {
       }
 
       const nowMs = Date.now()
+      const targetRaceOffMs = new Date(targetRace.offTime).getTime()
+      const overdueAttempt = overdueRefreshAttemptRef.current
+      const overdueAttemptIsFresh =
+        overdueAttempt?.raceId === targetRace.id &&
+        nowMs - overdueAttempt.attemptedAtMs < OVERDUE_RACE_REFRESH_BACKOFF_MS
+
+      if (targetRaceOffMs <= nowMs && !overdueAttemptIsFresh) {
+        overdueRefreshAttemptRef.current = { raceId: targetRace.id, attemptedAtMs: nowMs }
+        await runRaceRefresh()
+        return
+      }
+
       const { intervalMs, nextBoundaryAtMs } = resolveAutoRefreshInterval(targetRace.offTime, nowMs)
 
       let latestRun = raceImportRunRef.current

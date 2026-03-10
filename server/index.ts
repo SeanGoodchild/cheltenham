@@ -1,5 +1,6 @@
 import { applicationDefault, cert, getApps, initializeApp } from "firebase-admin/app"
 import { getFirestore, type Firestore } from "firebase-admin/firestore"
+import { createHash } from "node:crypto"
 import { readFile } from "node:fs/promises"
 
 import {
@@ -919,7 +920,7 @@ async function sendTestRaceResultTelegram(input: TestRaceMessageInput): Promise<
 }
 
 function toStringHash(value: string): string {
-  return String(Bun.hash(value))
+  return createHash("sha256").update(value).digest("hex")
 }
 
 function deriveLockAt(legs: Array<Pick<BetLeg, "raceId">>, races: Race[]): string {
