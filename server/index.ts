@@ -218,8 +218,22 @@ function initFirestore(): Firestore {
   return getFirestore()
 }
 
-const db = initFirestore()
-db.settings({ ignoreUndefinedProperties: true })
+let dbInitError: Error | null = null
+const db: Firestore = (() => {
+  try {
+    const firestore = initFirestore()
+    firestore.settings({ ignoreUndefinedProperties: true })
+    return firestore
+  } catch (error) {
+    dbInitError = error instanceof Error ? error : new Error(String(error))
+    console.error("firestore init failed", dbInitError)
+    return new Proxy({} as Firestore, {
+      get() {
+        throw dbInitError ?? new Error("Firestore init failed")
+      },
+    })
+  }
+})()
 
 function seasonDoc(firestore: Firestore) {
   return firestore.collection(FIRESTORE_ROOT).doc(CURRENT_SEASON)
@@ -2574,8 +2588,6 @@ async function ensureBootstrapped() {
 }
 
 export async function handleApiRequest(request: Request): Promise<Response> {
-  await ensureBootstrapped()
-
   const url = new URL(request.url)
   const pathname = url.pathname.replace(/\/+$/, "") || "/"
   const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
@@ -2605,6 +2617,7 @@ export async function handleApiRequest(request: Request): Promise<Response> {
             process.env.FIREBASE_PROJECT_ID ?? process.env.VITE_FIREBASE_PROJECT_ID ?? "rocketmill-octane",
           hasServiceAccountJson: Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON),
           hasGoogleApplicationCredentials: Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS),
+          initError: dbInitError?.message ?? null,
         },
       }
       console.info(`[api] ${requestId} health diagnostics`, diagnostics)
@@ -2613,6 +2626,12 @@ export async function handleApiRequest(request: Request): Promise<Response> {
       console.info(`[api] ${requestId} ${request.method} ${pathname} -> ${response.status} (${Date.now() - startedAt}ms)`)
       return response
     }
+
+    if (dbInitError) {
+      throw new Error(`Firestore init failed: ${dbInitError.message}`)
+    }
+
+    await ensureBootstrapped()
 
     if (request.method === "GET" && pathname === "/api/state") {
       return jsonResponse(await loadState())
