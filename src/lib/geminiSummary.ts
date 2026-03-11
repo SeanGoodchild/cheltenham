@@ -1,5 +1,6 @@
 import type { Bet, Race, UserProfile } from "./types.js"
 import { APP_TIMEZONE } from "./constants.js"
+import { getNextRelevantRace } from "./races.js"
 import {
   calculateBetPotentialProfit,
   calculateBetPotentialReturn,
@@ -375,18 +376,7 @@ function buildOpenSelectionsPacket(
 }
 
 function getNextRaceForSummary(races: Race[], now = Date.now()): Race | null {
-  const upcoming = races
-    .filter((race) => race.status !== "settled" && new Date(race.offTime).getTime() > now)
-    .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0]
-  if (upcoming) {
-    return upcoming
-  }
-
-  return (
-    races
-      .filter((race) => race.status !== "settled")
-      .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0] ?? null
-  )
+  return getNextRelevantRace(races, now)
 }
 
 function uniqueStrings(values: string[]): string[] {

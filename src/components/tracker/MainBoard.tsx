@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { formatCurrency, formatMarketOdds, formatPercent } from "@/lib/format"
 import { normalizeHorseName } from "@/lib/horse"
+import { getNextRelevantRace } from "@/lib/races"
 import { calculateBetPotentialProfit, getBetSettlementRaceId } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
 import type { Bet, Race, UserProfile, UserStats } from "@/lib/types"
@@ -298,11 +299,8 @@ function CurrentRaceCard({
     () => [...races].sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime()),
     [races],
   )
-  const defaultRaceId = useMemo(
-    () => orderedRaces.find((race) => race.status !== "settled")?.id ?? orderedRaces[0]?.id ?? null,
-    [orderedRaces],
-  )
-  const [selectedRaceId, setSelectedRaceId] = useState<string | null>(defaultRaceId)
+  const defaultRaceId = getNextRelevantRace(orderedRaces)?.id ?? orderedRaces[0]?.id ?? null
+  const [selectedRaceId, setSelectedRaceId] = useState<string | null>(null)
   const resolvedSelectedRaceId =
     selectedRaceId && orderedRaces.some((race) => race.id === selectedRaceId) ? selectedRaceId : defaultRaceId
   const selectedRaceIndex = orderedRaces.findIndex((race) => race.id === resolvedSelectedRaceId)

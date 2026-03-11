@@ -36,6 +36,7 @@ import {
   updateBet,
 } from "@/lib/firebase"
 import { getStoredOddsFormat, persistOddsFormat, type OddsFormat } from "@/lib/format"
+import { getNextRelevantRace } from "@/lib/races"
 import { buildRacePnlRanges, computeGlobalStats, computeUserStats } from "@/lib/settlement"
 import { formatIso, nowIso } from "@/lib/time"
 import type { Bet, GlobalStats, Race, RaceImportRun, UserProfile } from "@/lib/types"
@@ -368,9 +369,7 @@ export function App() {
     users,
   ])
   const nextRaceInfo = useMemo(() => {
-    const nextRace = races
-      .filter((race) => new Date(race.offTime).getTime() > nowTickMs)
-      .sort((a, b) => new Date(a.offTime).getTime() - new Date(b.offTime).getTime())[0]
+    const nextRace = getNextRelevantRace(races, nowTickMs)
 
     if (!nextRace) {
       return { label: "No upcoming race", countdown: "" }

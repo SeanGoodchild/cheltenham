@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { formatCurrency, formatOdds } from "@/lib/format"
 import { normalizeHorseName } from "@/lib/horse"
+import { getNextRelevantRace } from "@/lib/races"
 import { calculateBetPotentialProfit, getBetRiskStake, resolveBetOddsUsed } from "@/lib/settlement"
 import { formatIso } from "@/lib/time"
 import type { Bet, BetType, Race, RaceDay } from "@/lib/types"
@@ -157,13 +158,8 @@ export function BetPanel({
     () => bets.filter((bet) => bet.userId === selectedUserId && bet.status === "open"),
     [bets, selectedUserId],
   )
-  const nextRace = useMemo(
-    () =>
-      racesSorted.find((race) => new Date(race.offTime).getTime() > Date.now()) ??
-      racesSorted.find((race) => race.status !== "settled" && race.status !== "result_pending"),
-    [racesSorted],
-  )
-  const [draft, setDraft] = useState<BetDraftForm>(() => newDraft(selectedUserId, nextRace))
+  const nextRace = getNextRelevantRace(racesSorted)
+  const [draft, setDraft] = useState<BetDraftForm>(() => newDraft(selectedUserId, nextRace ?? undefined))
   const [editingBetId, setEditingBetId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -171,7 +167,7 @@ export function BetPanel({
   const [placesPaidInput, setPlacesPaidInput] = useState("3")
   const [placeFractionInput, setPlaceFractionInput] = useState("0.2")
   const [quickRacePicks, setQuickRacePicks] = useState<Record<number, { day?: RaceDay; time?: string }>>({
-    0: buildQuickPickForRace(nextRace),
+    0: buildQuickPickForRace(nextRace ?? undefined),
   })
   const [accaOddsManuallySet, setAccaOddsManuallySet] = useState(false)
   const [showAllOpenBets, setShowAllOpenBets] = useState(false)
@@ -182,24 +178,24 @@ export function BetPanel({
   }, [nextRace])
 
   const resetDraft = (userId: string) => {
-    const nextDraft = newDraft(userId, nextRace)
+    const nextDraft = newDraft(userId, nextRace ?? undefined)
     setDraft(nextDraft)
     setStakeInput("")
     setPlacesPaidInput(String(nextDraft.ewTerms?.placesPaid ?? 3))
     setPlaceFractionInput(String(nextDraft.ewTerms?.placeFraction ?? 0.2))
     setEditingBetId(null)
-    setQuickRacePicks({ 0: buildQuickPickForRace(nextRace) })
+    setQuickRacePicks({ 0: buildQuickPickForRace(nextRace ?? undefined) })
     setAccaOddsManuallySet(false)
   }
 
   useEffect(() => {
-    const nextDraft = newDraft(selectedUserId, nextRaceRef.current)
+    const nextDraft = newDraft(selectedUserId, nextRaceRef.current ?? undefined)
     setDraft(nextDraft)
     setStakeInput("")
     setPlacesPaidInput(String(nextDraft.ewTerms?.placesPaid ?? 3))
     setPlaceFractionInput(String(nextDraft.ewTerms?.placeFraction ?? 0.2))
     setEditingBetId(null)
-    setQuickRacePicks({ 0: buildQuickPickForRace(nextRaceRef.current) })
+    setQuickRacePicks({ 0: buildQuickPickForRace(nextRaceRef.current ?? undefined) })
     setActionError(null)
     setAccaOddsManuallySet(false)
   }, [selectedUserId])
@@ -764,12 +760,12 @@ export function BetPanel({
                         oddsUsed: !accaOddsManuallySet ? null : prev.oddsUsed,
                         legs: [
                           ...prev.legs,
-                          buildEmptyLeg(nextRace),
+                          buildEmptyLeg(nextRace ?? undefined),
                         ],
                       }))
                       setQuickRacePicks((prev) => ({
                         ...prev,
-                        [draft.legs.length]: buildQuickPickForRace(nextRace),
+                        [draft.legs.length]: buildQuickPickForRace(nextRace ?? undefined),
                       }))
                     }}
                   >
